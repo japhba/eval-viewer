@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>agent runs — method_bench viewer</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #fafafa; color: #222; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0f1115; color: #e5e7eb; }
+    header { background: #111827 !important; }
+    table { background: #1a1d23 !important; border-color: #2a2f37 !important; }
+    th { background: #20242c !important; color: #cbd5e1 !important; border-color: #2a2f37 !important; }
+    td { border-color: #2a2f37 !important; color: #e5e7eb; }
+    /* The light-mode `tr:hover > td` selector below has higher specificity
+       than `tr:hover`, so painting just the row in dark mode would lose to
+       the light pale-gray td rule. Apply the dark hover background to the
+       td directly so it actually wins. */
+    tr:hover, tr:hover > td { background: #20242c !important; }
+    .filters { background: #1a1d23 !important; border-color: #2a2f37 !important; color: #cbd5e1; }
+    .filters select, .filters input { background: #0f1115 !important; color: #e5e7eb !important; border-color: #374151 !important; }
+    .snippet { color: #cbd5e1 !important; }
+    .runid { color: #94a3b8 !important; }
+    .score-low { color: #f87171 !important; } .score-mid { color: #fbbf24 !important; } .score-high { color: #4ade80 !important; }
+  }
+  header { background: #1f2937; color: white; padding: 14px 24px; display: flex; gap: 24px; align-items: center; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header nav a { color: #cbd5e1; text-decoration: none; margin-right: 16px; font-size: 14px; }
+  header nav a:hover { color: white; }
+  main { padding: 20px 24px; }
+  .filters { background: white; border: 1px solid #e5e7eb; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .filters label { color: #6b7280; }
+  table { border-collapse: collapse; background: white; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+  th { background: #f9fafb; font-weight: 600; color: #374151; font-size: 12px; }
+  tr:hover { background: #f9fafb; cursor: pointer; }
+  .method { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; color: white; }
+  .runid { font-family: ui-monospace, monospace; font-size: 11px; color: #6b7280; }
+  .snippet { color: #4b5563; font-size: 12px; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 11px; background: #e5e7eb; color: #374151; }
+  .badge-warn { background: #fef3c7; color: #92400e; }
+  .score { font-family: ui-monospace, monospace; font-weight: 600; }
+  .score-low { color: #dc2626; } .score-mid { color: #d97706; } .score-high { color: #16a34a; }
+</style></head>
+<body>
+<header><h1>method_bench viewer</h1>
+  <nav><a href="/" id="nav-ov">Overview</a><a href="/predictions" id="nav-pr">Predictions</a><a href="/agents" id="nav-ag" style="color:white">Agent runs</a><a href="/ao/" id="nav-ao">AO runs</a>{DOCENT_NAV_LINK}</nav>
+  <span id="count" style="margin-left:auto;color:#9ca3af;font-size:12px"></span>
+</header>
+<main>
+  <div class="filters">
+    <label>Method <select id="f-method"><option value="">all</option></select></label>
+    <label>Task <select id="f-task"><option value="">all</option></select></label>
+    <label>Filter <input type="text" id="f-text" placeholder="lora / question / run_id substring" style="width:280px;padding:3px 6px;border:1px solid #d1d5db;border-radius:3px"></label>
+    <label><input type="checkbox" id="f-noempty" checked> hide runs with no prediction</label>
+  </div>
+  <table>
+    <thead><tr>
+      <th style="width:9%">Method</th>
+      <th style="width:7%">Task</th>
+      <th style="width:18%">LoRA</th>
+      <th style="width:24%">Question</th>
+      <th style="width:7%">Turns / events</th>
+      <th style="width:6%">Score</th>
+      <th style="width:23%">Final prediction</th>
+      <th style="width:6%">Run</th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="8" style="color:#9ca3af">loading…</td></tr></tbody>
+  </table>
+</main>
+<script>
+const METHOD_COLOR = {ia:"#16a34a", ao:"#fb923c", loracle:"#a855f7"};
+function esc(s){ return (s==null?"":String(s)).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtScore(s){
+  if(s==null) return '<span style="color:#9ca3af">—</span>';
+  const cls = s>=0.66 ? "score-high" : s>=0.33 ? "score-mid" : "score-low";
+  return `<span class="score ${cls}">${(+s).toFixed(2)}</span>`;
+}
+let RUNS = [];
+async function load(){
+  const r = await fetch("/api/agent_runs");
+  const j = await r.json();
+  RUNS = j.runs || [];
+  // Populate filter dropdowns
+  const methods = [...new Set(RUNS.map(r=>r.method).filter(Boolean))].sort();
+  const tasks = [...new Set(RUNS.map(r=>r.task).filter(Boolean))].sort();
+  document.getElementById("f-method").innerHTML = '<option value="">all</option>' + methods.map(m=>`<option>${esc(m)}</option>`).join("");
+  document.getElementById("f-task").innerHTML = '<option value="">all</option>' + tasks.map(t=>`<option>${esc(t)}</option>`).join("");
+  for(const id of ["f-method","f-task","f-noempty"]) document.getElementById(id).addEventListener("change", render);
+  document.getElementById("f-text").addEventListener("input", render);
+  render();
+}
+function render(){
+  const fm = document.getElementById("f-method").value;
+  const ft = document.getElementById("f-task").value;
+  const ftext = document.getElementById("f-text").value.toLowerCase();
+  const noempty = document.getElementById("f-noempty").checked;
+  const rows = RUNS.filter(r=>{
+    if(fm && r.method!==fm) return false;
+    if(ft && r.task!==ft) return false;
+    if(noempty && !r.has_prediction) return false;
+    if(ftext){
+      const blob = `${r.lora_id||""} ${r.question||""} ${r.run_id||""} ${r.prediction_snippet||""}`.toLowerCase();
+      if(!blob.includes(ftext)) return false;
+    }
+    return true;
+  });
+  document.getElementById("count").textContent = `${rows.length} of ${RUNS.length} runs`;
+  const tbody = document.getElementById("rows");
+  if(rows.length===0){ tbody.innerHTML = '<tr><td colspan="8" style="color:#9ca3af">no matching runs</td></tr>'; return; }
+  tbody.innerHTML = rows.map(r=>{
+    const mc = METHOD_COLOR[r.method] || "#6b7280";
+    const has = r.has_prediction ? "" : '<span class="badge badge-warn">no FINAL</span> ';
+    return `<tr onclick="window.location='/agents/${encodeURIComponent(r.run_id)}'">
+      <td><span class="method" style="background:${mc}">${esc(r.method||"?")}</span></td>
+      <td>${esc(r.task||"")}</td>
+      <td><span class="snippet">${esc((r.lora_id||"").split("__").pop())}</span></td>
+      <td>${esc(r.question||"")}</td>
+      <td>${r.n_turns} / ${r.n_events}</td>
+      <td>${fmtScore(r.scorer_score)}</td>
+      <td><span class="snippet">${has}${esc(r.prediction_snippet||"")}</span></td>
+      <td><span class="runid">${esc(r.run_id.slice(0,8))}</span></td>
+    </tr>`;
+  }).join("");
+}
+load();
+</script></body></html>

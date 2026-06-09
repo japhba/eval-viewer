@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>cell — method_bench viewer</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #fafafa; color: #222; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0f1115; color: #e5e7eb; }
+    header { background: #111827 !important; }
+    main { color: #e5e7eb; }
+    table { background: #1a1d23 !important; border-color: #2a2f37 !important; }
+    th { background: #20242c !important; color: #cbd5e1 !important; border-color: #2a2f37 !important; }
+    td { border-color: #2a2f37 !important; color: #e5e7eb; }
+    /* The light-mode `tr:hover > td` selector below has higher specificity
+       than `tr:hover`, so painting just the row in dark mode would lose to
+       the light pale-gray td rule. Apply the dark hover background to the
+       td directly so it actually wins. */
+    tr:hover, tr:hover > td { background: #20242c !important; }
+    h2 { color: #94a3b8 !important; }
+    h3 { color: #cbd5e1 !important; }
+    .filters, .qa-box, .pred-card, .judge-box { background: #1a1d23 !important; border-color: #2a2f37 !important; color: #e5e7eb !important; }
+    .filters label, .col-toggles label { color: #cbd5e1 !important; }
+    .filters select, .filters input[type=text] { background: #0f1115 !important; color: #e5e7eb !important; border-color: #374151 !important; }
+    .pred-header { background: #20242c !important; border-color: #2a2f37 !important; color: #e5e7eb !important; }
+    .pred-meta, .pred-snip, .target { color: #cbd5e1 !important; }
+    .pred-body { color: #e5e7eb !important; }
+    .qa-box .target { background: #14302a !important; border-left-color: #10b981 !important; color: #d1fae5 !important; }
+    .pblock { background: #181b21 !important; border-color: #2a2f37 !important; }
+    .pblock-head { background: #20242c !important; border-color: #2a2f37 !important; }
+    .pblock-inline { background: #1a1d23 !important; color: #e5e7eb !important; border-color: #2a2f37 !important; }
+    .pblock-body { background: #15181d !important; color: #cbd5e1 !important; }
+    .scorer-box { background: #2a2113 !important; border-color: #92400e !important; color: #fde68a !important; }
+    .scorer-box .label { color: #fbbf24 !important; }
+    .lora-link { color: #60a5fa !important; }
+    .ptag { background: #2a2f37 !important; color: #e5e7eb !important; }
+    .ptag-broad { background: #1e3a8a !important; color: #dbeafe !important; }
+    .ptag-narrow { background: #78350f !important; color: #fef3c7 !important; }
+    .score-low  { color: #f87171 !important; }
+    .score-mid  { color: #fbbf24 !important; }
+    .score-high { color: #4ade80 !important; }
+    .uplift-pos { color: #4ade80 !important; }
+    .uplift-neg { color: #f87171 !important; }
+    .curve .seg { background: #20242c !important; color: #cbd5e1 !important; }
+    .ckpt { color: #94a3b8 !important; }
+    .pwarn { background: #3b1416 !important; color: #fca5a5 !important; border-color: #7f1d1d !important; }
+  }
+  header { background: #1f2937; color: white; padding: 14px 24px; display: flex; gap: 24px; align-items: center; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header nav a { color: #cbd5e1; text-decoration: none; margin-right: 16px; font-size: 14px; }
+  header nav a:hover { color: white; }
+  main { padding: 20px 24px; width: 100%; box-sizing: border-box; }
+  .qa-box { background: white; padding: 16px 20px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 20px; }
+  .qa-box h2 { margin: 0 0 8px 0; font-size: 13px; text-transform: uppercase; color: #6b7280; letter-spacing: 0.05em; }
+  .qa-box .question { font-size: 16px; font-weight: 500; color: #111827; }
+  .qa-box .target { margin-top: 12px; padding: 10px 14px; background: #ecfdf5; border-left: 3px solid #10b981; color: #065f46; font-size: 14px; }
+  .qa-box .meta { color: #9ca3af; font-size: 12px; margin-top: 8px; }
+  .pred-card { background: white; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
+  .pred-header { padding: 10px 16px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; display: flex; gap: 14px; align-items: center; font-size: 13px; }
+  .method { display: inline-block; padding: 2px 10px; border-radius: 3px; font-size: 12px; font-weight: 600; color: white; }
+  .pred-meta { color: #6b7280; font-family: ui-monospace, monospace; font-size: 11px; }
+  .pred-score { margin-left: auto; }
+  .score { font-family: ui-monospace, monospace; font-weight: 600; font-size: 14px; padding: 2px 10px; border-radius: 4px; }
+  .score-low { background: #fee2e2; color: #991b1b; } .score-mid { background: #fef3c7; color: #92400e; } .score-high { background: #d1fae5; color: #065f46; }
+  .pred-body { padding: 10px 12px; max-height: 500px; overflow-y: auto; line-height: 1.5; color: #1f2937; }
+  .pred-parts { padding: 8px 12px 0 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .pblock { border: 1px solid #e5e7eb; border-radius: 4px; margin-bottom: 8px; overflow: hidden; background: #fafbfc; }
+  .pblock:last-child { margin-bottom: 0; }
+  .pblock-head { padding: 5px 10px; background: #f3f4f6; border-bottom: 1px solid #e5e7eb; font-family: -apple-system, sans-serif; font-size: 11px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .pblock-inline { padding: 6px 12px; font-size: 13px; color: #111827; border-bottom: 1px solid #f3f4f6; background: white; }
+  .pblock-body { padding: 8px 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; white-space: pre-wrap; color: #374151; background: white; }
+  .ptag { display: inline-block; padding: 1px 7px; background: #e5e7eb; color: #374151; border-radius: 3px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-family: -apple-system, sans-serif; }
+  .ptag-broad { background: #dbeafe; color: #1e40af; }
+  .ptag-narrow { background: #fef3c7; color: #92400e; }
+  .ptag-detail { font-family: ui-monospace, monospace; font-size: 11px; color: #6b7280; font-weight: 500; }
+  .resp-arrow { display: inline-block; color: #2563eb; font-weight: 700; padding: 0 4px; }
+  .pwarn { display: inline-block; padding: 2px 8px; background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; border-radius: 3px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-family: -apple-system, sans-serif; }
+  .scorer-box { padding: 10px 16px; background: #fffbeb; border-top: 1px solid #fde68a; font-size: 12px; color: #78350f; }
+  .scorer-box .label { font-weight: 600; text-transform: uppercase; font-size: 10px; color: #92400e; margin-bottom: 4px; }
+  .judge-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 14px 18px; margin-top: 24px; font-size: 13px; color: #1e3a8a; }
+  .judge-box h2 { margin: 0 0 10px 0; font-size: 13px; text-transform: uppercase; color: #1e40af; }
+  .judge-row { padding: 6px 0; border-bottom: 1px solid #dbeafe; }
+  .judge-row:last-child { border-bottom: 0; }
+</style></head>
+<body>
+<header><h1>method_bench viewer</h1>
+  <nav><a href="/" id="nav-ov">Overview</a><a href="/predictions" id="nav-pr">Predictions</a><a href="/agents" id="nav-ag">Agent runs</a><a href="/ao/" id="nav-ao">AO runs</a>{DOCENT_NAV_LINK}</nav>
+  <label style="color:#cbd5e1;font-size:13px">DB
+    <select id="db-select" style="margin-left:6px;font-size:13px;padding:3px 6px;border:1px solid #334155;background:#0f172a;color:#cbd5e1;border-radius:3px"></select>
+  </label>
+  <label style="color:#cbd5e1;font-size:13px" title="scorer paradigm — controls which scores feed the aggregates (cell page always shows all)">Scorer
+    <select id="paradigm-select" style="margin-left:6px;font-size:13px;padding:3px 6px;border:1px solid #334155;background:#0f172a;color:#cbd5e1;border-radius:3px"></select>
+  </label>
+  <span id="version-badge" style="font-size:11px;font-weight:600;letter-spacing:0.03em;padding:3px 10px;border-radius:3px;cursor:pointer" title="click to toggle latest-only / show-all"></span>
+</header>
+<main id="main"><div style="color:#9ca3af">loading…</div></main>
+<script>
+const LORA_ID = decodeURIComponent("{LORA_ID}");
+const QA_ID   = decodeURIComponent("{QA_ID}");
+const METHOD_COLOR = {loracle:"#9467bd", ia:"#2ca02c", ao:"#ff7f0e", "ia:agent":"#16a34a", "ao:agent":"#fb923c", "loracle:agent":"#a855f7"};
+const METHOD_DISPLAY = {loracle:"LoRAcle", ia:"IA", ao:"AO", "ia:agent":"IA+Agent", "ao:agent":"AO+Agent", "loracle:agent":"LoRAcle+Agent"};
+
+function methodLabel(m){ return METHOD_DISPLAY[m] || m.toUpperCase(); }
+function colorFor(m){ return METHOD_COLOR[m] || "#6b7280"; }
+function esc(s){ return (s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+function fmtScore(s){ if(s===null||s===undefined) return '<span class="score score-low">--</span>'; const cls = s<0.2?"score-low":(s<0.6?"score-mid":"score-high"); return `<span class="score ${cls}">${s.toFixed(2)}</span>`; }
+function shortHfId(id){
+  if(!id) return "";
+  return id.split("/").pop().split("@")[0];
+}
+function splitKindCell(k){
+  if(!k) return {base: "-", repeat: ""};
+  // taboo_q<N>_e<NNN>_s<NN> -> base=taboo_q<N>, repeat=e<NNN>_s<NN>
+  const m = /^(broad|narrow|taboo_q\d+)(?:_(.+))?$/.exec(k);
+  if(!m) return {base: k, repeat: ""};
+  return {base: m[1], repeat: m[2] || ""};
+}
+function expandTagDetail(s){
+  return (s||"").replace(/\bctx(\s|$)/g,"context_prompt$1").replace(/\bseg(\s|$)/g,"segment$1").replace(/\s+/g," ").trim();
+}
+function annotateBody(rawText){
+  const parts = String(rawText||"").split(/(\(agent did not emit FINAL within max_turns\))/);
+  return parts.map(p => p === "(agent did not emit FINAL within max_turns)"
+    ? '<span class="pwarn">agent timeout - no FINAL emitted</span>'
+    : esc(p).replace(/^([ \t]*)-&gt;\s/gm, '$1<span class="resp-arrow">&rarr;</span> ')
+  ).join("");
+}
+function annotateEsc(raw){
+  let s = esc(raw||"");
+  s = s.replace(/^\(agent did not emit FINAL within max_turns\)/m,
+    '<span class="pwarn">agent timeout - no FINAL</span>');
+  s = s.replace(/\[(broad|narrow)([^\]]*)\]/g, (_, kind, rest) => {
+    const detail = expandTagDetail(rest);
+    return `<span class="ptag ptag-${kind}">${kind}</span>${detail?` <span class="ptag-detail">${esc(detail)}</span>`:""}`;
+  });
+  return s;
+}
+function predictionPartBadges(p){
+  const parts = (p.metadata && (p.metadata.prediction_parts || p.metadata.per_act_responses || p.metadata.per_prompt_responses)) || [];
+  if(!parts.length) return "";
+  const badges = parts.map(x => {
+    const label = x.label || (x.act ? `pooled_${x.act}` : (x.prompt ? `prompt_${(x.idx ?? 0) + 1}` : ""));
+    return label ? `<span class="ptag">${esc(label)}</span>` : "";
+  }).join("");
+  return badges ? `<div class="pred-parts">${badges}</div>` : "";
+}
+function formatPrediction(raw){
+  if(!raw) return "";
+  const lines = String(raw).split(/\r?\n/);
+  const headerRe = /^\[([^\]]+)\]\s*(.*)$/;
+  const blocks = [];
+  let cur = null;
+  for(const ln of lines){
+    const m = ln.match(headerRe);
+    if(m){ if(cur) blocks.push(cur); cur = { tag: m[1], inline: m[2], body: [] }; }
+    else { if(!cur) cur = { tag: null, inline: "", body: [ln] }; else cur.body.push(ln); }
+  }
+  if(cur) blocks.push(cur);
+  return blocks.map(b => {
+    while(b.body.length && b.body[b.body.length-1].trim() === "") b.body.pop();
+    let head = "";
+    if(b.tag !== null){
+      const km = b.tag.match(/^(broad|narrow)\b\s*(.*)$/);
+      const kind = km ? km[1] : null;
+      const rest = expandTagDetail(km ? km[2] : b.tag);
+      const kindHtml = kind ? `<span class="ptag ptag-${kind}">${kind}</span>` : `<span class="ptag">${esc(b.tag)}</span>`;
+      const restHtml = rest ? `<span class="ptag-detail">${esc(rest)}</span>` : "";
+      head = `<div class="pblock-head">${kindHtml}${restHtml}</div>`;
+    }
+    const inlineHtml = (b.inline && b.inline.trim()) ? `<div class="pblock-inline">${esc(b.inline)}</div>` : "";
+    const bodyText = b.body.join("\n");
+    const bodyHtml = bodyText.trim() ? `<div class="pblock-body">${annotateBody(bodyText)}</div>` : "";
+    return `<div class="pblock">${head}${inlineHtml}${bodyHtml}</div>`;
+  }).join("");
+}
+function curDb(){ return new URL(location.href).searchParams.get("db") || ""; }
+function withDb(url){ const db = curDb(); if(!db) return url; return url + (url.includes("?")?"&":"?") + "db=" + encodeURIComponent(db); }
+function curVersionsAll(){ return (new URL(location.href).searchParams.get("versions") || "").toLowerCase() === "all"; }
+function curPickParams(){
+  return new URL(location.href).searchParams.getAll("pick");
+}
+function curScorerId(){ return new URL(location.href).searchParams.get("scorer_id") || ""; }
+async function setupParadigmSelector(){
+  const sel = document.getElementById("paradigm-select"); if(!sel) return;
+  const r = await fetch("/api/scorer_paradigms");
+  const list = await r.json();
+  const cur = curScorerId();
+  // When no scorer_id is in the URL, the backend defaults to scorer.txt —
+  // visually pre-select that option so the dropdown reflects actual state.
+  const isDefault = (p) => (p.template_path || "").endsWith("scorer.txt");
+  sel.innerHTML = list.map(p => {
+    const selAttr = cur ? (String(p.scorer_id)===cur ? "selected" : "")
+                        : (isDefault(p) ? "selected" : "");
+    return `<option value="${p.scorer_id}" ${selAttr}>${p.label} (${p.n_scores})</option>`;
+  }).join("");
+  sel.addEventListener("change", () => {
+    const u = new URL(location.href); u.searchParams.set("scorer_id", sel.value); location.href = u.toString();
+  });
+}
+function withDbAndVersions(url){
+  let u = withDb(url);
+  if(curVersionsAll()){ u += (u.includes("?")?"&":"?") + "versions=all"; }
+  for(const p of curPickParams()){
+    u += (u.includes("?")?"&":"?") + "pick=" + encodeURIComponent(p);
+  }
+  const sid = curScorerId();
+  if(sid){ u += (u.includes("?")?"&":"?") + "scorer_id=" + encodeURIComponent(sid); }
+  return u;
+}
+function _vbFmtTs(ts){
+  if(!ts) return "—";
+  return new Date(ts*1000).toISOString().slice(0,16).replace("T"," ");
+}
+async function setupVersionBadge(){
+  const r = await fetch(withDbAndVersions("/api/version_status"));
+  const j = await r.json();
+  const b = document.getElementById("version-badge");
+  if(!b) return;
+  const showAll = !j.latest_only;
+  const nDropped = (j.dropped || []).reduce((a,d) => a + d.dropped.length, 0);
+  const nOverride = (j.picks || []).length;
+  if(showAll){
+    b.style.background = "#fef9c3"; b.style.color = "#713f12"; b.style.border = "1px solid #fde68a";
+    b.textContent = "showing ALL versions";
+  } else if(nOverride){
+    b.style.background = "#fde68a"; b.style.color = "#92400e"; b.style.border = "1px solid #fbbf24";
+    b.textContent = `manual: ${nOverride} overridden`;
+  } else {
+    b.style.background = nDropped ? "#dbeafe" : "#e5e7eb";
+    b.style.color = "#1e3a8a"; b.style.border = "1px solid #93c5fd";
+    b.textContent = `latest only (${nDropped} hidden)`;
+  }
+  b.title = "Click to pick versions per method.";
+
+  const groups = j.groups || [];
+  const reasonNote = (j.dropped || []).some(d => d.reason === "recency")
+    ? "Some methods auto-picked by created_at recency (no _v<N>_ marker)." : "";
+
+  const panel = document.createElement("div");
+  panel.id = "version-panel";
+  panel.style.cssText = "display:none;position:fixed;background:white;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:11px;color:#1f2937;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:1000;min-width:480px;max-height:70vh;overflow:auto";
+
+  const url = new URL(location.href);
+  const curPicks = {};
+  for(const p of url.searchParams.getAll("pick")){
+    const parts = p.split(":");
+    if(parts.length === 3) curPicks[parts[0]+":"+parts[1]] = parts[2];
+  }
+  let html = "";
+  if(groups.length === 0){
+    html += "<div style='color:#6b7280'>Only one version per method — nothing to pick.</div>";
+  } else {
+    html += "<div style='font-weight:600;margin-bottom:6px'>Pick a method_version per method</div>";
+    if(reasonNote){
+      html += `<div style="color:#92400e;background:#fef3c7;padding:4px 6px;border-radius:4px;margin-bottom:6px;font-size:10px">${esc(reasonNote)}</div>`;
+    }
+    html += "<table style='border-collapse:collapse;width:100%'>";
+    for(const g of groups){
+      const key = g.method + ":" + g.mode;
+      const cur = curPicks[key] || g.kept || (g.versions[0] && g.versions[0].version);
+      const opts = (g.versions || []).map(v => {
+        const label = `${v.version} · ${v.n} preds · ${_vbFmtTs(v.ts)}`;
+        return `<option value="${esc(v.version)}" ${v.version===cur?"selected":""}>${esc(label)}</option>`;
+      }).join("");
+      const reasonChip = g.reason === "override" ? '<span style="color:#92400e;font-size:9px;margin-left:4px">manual</span>'
+                       : g.reason === "recency" ? '<span style="color:#6b7280;font-size:9px;margin-left:4px">by recency</span>'
+                       : g.reason === "regex" ? '<span style="color:#6b7280;font-size:9px;margin-left:4px">by v-marker</span>'
+                       : '';
+      html += `<tr>
+        <td style="padding:3px 6px 3px 0;font-weight:500;white-space:nowrap;vertical-align:top">${esc(g.method)}${g.mode!=='direct'?'/'+esc(g.mode):''}${reasonChip}</td>
+        <td style="padding:3px 0"><select data-method="${esc(g.method)}" data-mode="${esc(g.mode)}" style="font-size:11px;width:100%">${opts}</select></td>
+      </tr>`;
+    }
+    html += "</table>";
+    html += `<div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center">
+      <label style="cursor:pointer"><input type="checkbox" id="vp-all" ${showAll?"checked":""}> show all versions (no filter)</label>
+      <span><button id="vp-reset" style="font-size:11px;margin-right:6px">reset to auto</button>
+            <button id="vp-apply" style="font-size:11px;font-weight:600;background:#2563eb;color:white;border:0;padding:4px 10px;border-radius:4px;cursor:pointer">apply</button></span></div>`;
+  }
+  panel.innerHTML = html;
+  document.body.appendChild(panel);
+
+  function placePanel(){
+    const r2 = b.getBoundingClientRect();
+    panel.style.left = Math.max(8, r2.left) + "px";
+    panel.style.top = (r2.bottom + 4) + "px";
+  }
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if(panel.style.display === "none"){ placePanel(); panel.style.display = "block"; }
+    else { panel.style.display = "none"; }
+  };
+  document.addEventListener("click", (e) => {
+    if(panel.style.display !== "none" && !panel.contains(e.target) && e.target !== b){
+      panel.style.display = "none";
+    }
+  });
+
+  const apply = panel.querySelector("#vp-apply");
+  if(apply){
+    apply.onclick = () => {
+      const u = new URL(location.href);
+      u.searchParams.delete("versions");
+      u.searchParams.delete("pick");
+      if(panel.querySelector("#vp-all").checked){
+        u.searchParams.set("versions","all");
+      } else {
+        for(const sel of panel.querySelectorAll("select[data-method]")){
+          u.searchParams.append("pick", `${sel.dataset.method}:${sel.dataset.mode}:${sel.value}`);
+        }
+      }
+      location.href = u.toString();
+    };
+  }
+  const reset = panel.querySelector("#vp-reset");
+  if(reset){
+    reset.onclick = () => {
+      const u = new URL(location.href);
+      u.searchParams.delete("versions");
+      u.searchParams.delete("pick");
+      location.href = u.toString();
+    };
+  }
+
+  // Propagate version controls into nav links so switching pages preserves the
+  // user's pick set.
+  for(const a of document.querySelectorAll("header nav a")){
+    let h = a.getAttribute("href");
+    if(showAll && !h.includes("versions=")){
+      h += (h.includes("?")?"&":"?") + "versions=all";
+    }
+    for(const p of curPickParams()){
+      h += (h.includes("?")?"&":"?") + "pick=" + encodeURIComponent(p);
+    }
+    a.setAttribute("href", h);
+  }
+}
+async function setupDbSelector(){
+  const r = await fetch("/api/dbs"); const j = await r.json();
+  const sel = document.getElementById("db-select"); if(!sel) return;
+  const cur = j.selected;
+  sel.innerHTML = j.dbs.map(d => {
+    const tag = d.any_agentic ? " [AGENT]" : "";
+    return `<option value="${d.name}" ${d.name===cur?"selected":""}>${d.name}${tag}</option>`;
+  }).join("");
+  sel.addEventListener("change", () => {
+    const u = new URL(location.href); u.searchParams.set("db", sel.value); location.href = u.toString();
+  });
+  for(const a of document.querySelectorAll("header nav a")){ a.href = withDbAndVersions(a.getAttribute("href")); }
+  await setupVersionBadge();
+  // Prominent agentic badge for the currently-selected DB.
+  const sd = j.dbs.find(d => d.name === cur);
+  const b = document.getElementById("agentic-badge");
+  if(b && sd){
+    if(sd.any_agentic){
+      const am = sd.methods.filter(m => m.agentic).map(m => `${m.name}(n=${m.n})`).join(", ");
+      b.style.background = "#fee2e2"; b.style.color = "#991b1b"; b.style.border = "1px solid #fca5a5";
+      b.title = "This DB contains predictions from agent-assisted mode.";
+      b.textContent = "agent-assisted -- " + am;
+    } else {
+      b.style.background = "#dcfce7"; b.style.color = "#166534"; b.style.border = "1px solid #86efac";
+      b.title = "No agent-assisted predictions in this DB.";
+      b.textContent = "direct-only";
+    }
+  }
+}
+
+async function load(){
+  await setupDbSelector();
+  await setupParadigmSelector();
+  const r = await fetch(withDbAndVersions(`/api/cell/${encodeURIComponent(LORA_ID)}/${encodeURIComponent(QA_ID)}`));
+  const j = await r.json();
+  if(j.error){ document.getElementById("main").innerHTML = `<p style='color:#dc2626'>${esc(j.error)}</p>`; return; }
+  let h = `
+    <div class="qa-box">
+      <h2>category=${esc(j.qa.category)} -- lora_id=${esc(LORA_ID)}</h2>
+      <div class="question"><span style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:0.04em">question</span><br>${esc(j.qa.question)}</div>
+      <div class="target"><strong>target_response:</strong> ${esc(j.qa.target_response)}</div>
+      <div class="meta">qa_id: <code>${esc(j.qa.qa_id)}</code> &middot; ${j.predictions.length} predictions</div>
+    </div>
+  `;
+  // Annotate each prediction with split kind + repeat suffix.
+  for(const p of j.predictions){
+    const sk = splitKindCell(p.sub_prompt_kind);
+    p._kind_base = sk.base; p._kind_repeat = sk.repeat;
+  }
+  // Sort: base kind asc, then method asc, then repeat asc
+  j.predictions.sort((a,b) => (a._kind_base+a.method+a._kind_repeat).localeCompare(b._kind_base+b.method+b._kind_repeat));
+  // Group by BASE kind (broad/narrow) — repeats appear as badges within cards.
+  const byKind = {};
+  for(const p of j.predictions){ (byKind[p._kind_base] ??= []).push(p); }
+  for(const kind of Object.keys(byKind).sort()){
+    const cls = (kind==="broad")?"ptag-broad":(kind==="narrow")?"ptag-narrow":"";
+    h += `<h3 style="margin:18px 0 6px 0;font-size:13px;text-transform:uppercase;letter-spacing:0.05em;color:#374151">
+      <span class="ptag ${cls}">${esc(kind)}</span>
+      <span style="color:#9ca3af;font-weight:400">${byKind[kind].length} prediction(s)</span>
+    </h3>`;
+    for(const p of byKind[kind]){
+      // Render every paradigm's score (rubric, binary, ...) so they appear
+      // side by side instead of an arbitrary "first" pick. Header score = the
+      // canonical scorer.txt rubric paradigm if present, else the first one.
+      const scores = p.scores || [];
+      const isRubric = (s) => (s.template_path || "").endsWith("scorer.txt");
+      const headerScoreObj = scores.find(isRubric) || scores[0] || null;
+      const headerScore = headerScoreObj ? headerScoreObj.scorer_score : null;
+      const ckHtml = p.hf_model_id ? ` <span style="font-family:ui-monospace,monospace;font-size:11px;color:#6b7280" title="${esc(p.hf_model_id)}">@${esc(shortHfId(p.hf_model_id))}</span>` : "";
+      const repHtml = p._kind_repeat ? ` <span class="ptag" title="verbalization repeat / variant" style="background:#e0e7ff;color:#3730a3;font-size:10px">${esc(p._kind_repeat)}</span>` : "";
+      let scorerBoxes = "";
+      for(const ss of scores){
+        const tp = ss.template_path || "";
+        const base = tp.split("/").pop().replace(/\.[^.]+$/, "") || "scorer";
+        const tag = base + "·" + (ss.scorer_prompt_hash || "").slice(0,6);
+        const sval = ss.unclear ? "<span style='color:#92400e'>unclear (NaN)</span>"
+                                : (ss.scorer_score === null ? "—" : fmtScore(ss.scorer_score));
+        const just = ss.scorer_justification ? esc(ss.scorer_justification) : "";
+        scorerBoxes += `<div class="scorer-box">
+          <div class="label">${esc(tag)} &middot; ${esc(ss.scorer_model || "")} &middot; score=${sval}</div>
+          ${just}
+        </div>`;
+      }
+      h += `
+        <div class="pred-card">
+          <div class="pred-header">
+            <span class="method" style="background:${colorFor(p.method)}">${methodLabel(p.method)}</span>${ckHtml}${repHtml}
+            <span class="pred-meta">${p.sample_size!==null?'samples='+p.sample_size+' &middot; ':''}method_version=${esc(p.method_version).slice(0,40)}...</span>
+            <span class="pred-score">${fmtScore(headerScore)}</span>
+          </div>
+          ${predictionPartBadges(p)}
+          <div class="pred-body">${formatPrediction(p.prediction)}</div>
+          ${scorerBoxes}
+        </div>
+      `;
+    }
+  }
+  if(j.judge_scores.length > 0){
+    h += `<div class="judge-box"><h2>Comparative judge (${j.judge_scores.length} entries)</h2>`;
+    for(const j2 of j.judge_scores){
+      h += `<div class="judge-row"><strong>${methodLabel(j2.method)}</strong> ${fmtScore(j2.judge_score)} <span style="color:#6b7280">— ${esc(j2.judge_justification)}</span></div>`;
+    }
+    h += `</div>`;
+  }
+  document.getElementById("main").innerHTML = h;
+}
+load();
+</script></body></html>

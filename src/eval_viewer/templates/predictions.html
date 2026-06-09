@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>predictions — method_bench viewer</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #fafafa; color: #222; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0f1115; color: #e5e7eb; }
+    header { background: #111827 !important; }
+    main { color: #e5e7eb; }
+    table { background: #1a1d23 !important; border-color: #2a2f37 !important; }
+    th { background: #20242c !important; color: #cbd5e1 !important; border-color: #2a2f37 !important; }
+    td { border-color: #2a2f37 !important; color: #e5e7eb; }
+    /* The light-mode `tr:hover > td` selector below has higher specificity
+       than `tr:hover`, so painting just the row in dark mode would lose to
+       the light pale-gray td rule. Apply the dark hover background to the
+       td directly so it actually wins. */
+    tr:hover, tr:hover > td { background: #20242c !important; }
+    h2 { color: #94a3b8 !important; }
+    h3 { color: #cbd5e1 !important; }
+    .filters, .qa-box, .pred-card, .judge-box { background: #1a1d23 !important; border-color: #2a2f37 !important; color: #e5e7eb !important; }
+    .filters label, .col-toggles label { color: #cbd5e1 !important; }
+    .filters select, .filters input[type=text] { background: #0f1115 !important; color: #e5e7eb !important; border-color: #374151 !important; }
+    .pred-header { background: #20242c !important; border-color: #2a2f37 !important; color: #e5e7eb !important; }
+    .pred-meta, .pred-snip, .target { color: #cbd5e1 !important; }
+    .pred-body { color: #e5e7eb !important; }
+    .qa-box .target { background: #14302a !important; border-left-color: #10b981 !important; color: #d1fae5 !important; }
+    .pblock { background: #181b21 !important; border-color: #2a2f37 !important; }
+    .pblock-head { background: #20242c !important; border-color: #2a2f37 !important; }
+    .pblock-inline { background: #1a1d23 !important; color: #e5e7eb !important; border-color: #2a2f37 !important; }
+    .pblock-body { background: #15181d !important; color: #cbd5e1 !important; }
+    .scorer-box { background: #2a2113 !important; border-color: #92400e !important; color: #fde68a !important; }
+    .scorer-box .label { color: #fbbf24 !important; }
+    .lora-link { color: #60a5fa !important; }
+    .ptag { background: #2a2f37 !important; color: #e5e7eb !important; }
+    .ptag-broad { background: #1e3a8a !important; color: #dbeafe !important; }
+    .ptag-narrow { background: #78350f !important; color: #fef3c7 !important; }
+    .score-low  { color: #f87171 !important; }
+    .score-mid  { color: #fbbf24 !important; }
+    .score-high { color: #4ade80 !important; }
+    .uplift-pos { color: #4ade80 !important; }
+    .uplift-neg { color: #f87171 !important; }
+    .curve .seg { background: #20242c !important; color: #cbd5e1 !important; }
+    .ckpt { color: #94a3b8 !important; }
+    .pwarn { background: #3b1416 !important; color: #fca5a5 !important; border-color: #7f1d1d !important; }
+    /* Lora-group spacer color works in both modes; nothing to override. */
+  }
+  header { background: #1f2937; color: white; padding: 14px 24px; display: flex; gap: 24px; align-items: center; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header nav a { color: #cbd5e1; text-decoration: none; margin-right: 16px; font-size: 14px; }
+  header nav a:hover { color: white; }
+  main { padding: 20px 24px; width: 100%; box-sizing: border-box; }
+  .filters { background: white; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 20px; display: flex; gap: 18px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+  .filters label { color: #6b7280; font-weight: 500; }
+  .filters select, .filters input[type=text] { font-size: 13px; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  .filters input[type=range] { vertical-align: middle; }
+  table { border-collapse: collapse; background: white; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; width: 100%; font-size: 12px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+  th { background: #f9fafb; font-weight: 600; color: #374151; font-size: 11px; user-select: none; position: relative; }
+  th .sortlabel { cursor: pointer; }
+  th:hover { background: #f3f4f6; }
+  tr:hover > td { background: #f9fafb; }
+  /* Spacer row inserted between adjacent loras when "Group by lora" is on.
+     A dedicated <tr> avoids border-collapse vs. the per-row td border-bottom
+     (which made a plain border-top rule render flush against the previous
+     border and effectively invisible). */
+  tr.lora-sep-row > td { padding: 0 !important; height: 4px; background: #475569;
+                         border: 0 !important; }
+  tr.lora-sep-row:hover > td { background: #475569 !important; }
+  table { table-layout: fixed; width: 100%; }
+  td { word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+  .col-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
+  .col-resizer:hover, .col-resizer.dragging { background: #93c5fd; }
+  .method { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; color: white; }
+  .score { font-family: ui-monospace, monospace; font-weight: 600; }
+  .score-low { color: #dc2626; } .score-mid { color: #d97706; } .score-high { color: #16a34a; }
+  .pred-snip { font-family: ui-monospace, monospace; color: #4b5563; word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+  .ptag { display: inline-block; padding: 0 4px; margin-right: 4px; background: #e5e7eb; color: #374151; border-radius: 2px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; vertical-align: 1px; }
+  .ptag-broad { background: #dbeafe; color: #1e40af; }
+  .ptag-narrow { background: #fef3c7; color: #92400e; }
+  .pwarn { display: inline-block; padding: 0 4px; background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; border-radius: 2px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+  .lora-link { color: #2563eb; text-decoration: none; }
+  .lora-link:hover { text-decoration: underline; }
+  .target { color: #6b7280; word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+  .ckpt { display: inline-block; margin-left: 6px; font-family: ui-monospace, monospace; font-size: 10px; color: #6b7280; }
+  .col-toggles { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .col-toggles label { color: #374151; font-weight: 400; cursor: pointer; user-select: none; }
+  .col-toggles input { vertical-align: -1px; margin-right: 3px; }
+</style></head>
+<body>
+<header><h1>method_bench viewer</h1>
+  <nav><a href="/" id="nav-ov">Overview</a><a href="/predictions" id="nav-pr">Predictions</a><a href="/agents" id="nav-ag">Agent runs</a><a href="/ao/" id="nav-ao">AO runs</a>{DOCENT_NAV_LINK}</nav>
+  <label style="color:#cbd5e1;font-size:13px">DB
+    <select id="db-select" style="margin-left:6px;font-size:13px;padding:3px 6px;border:1px solid #334155;background:#0f172a;color:#cbd5e1;border-radius:3px"></select>
+  </label>
+  <label style="color:#cbd5e1;font-size:13px" title="scorer paradigm — controls which scores feed the aggregates (cell page always shows all)">Scorer
+    <select id="paradigm-select" style="margin-left:6px;font-size:13px;padding:3px 6px;border:1px solid #334155;background:#0f172a;color:#cbd5e1;border-radius:3px"></select>
+  </label>
+  <span id="version-badge" style="font-size:11px;font-weight:600;letter-spacing:0.03em;padding:3px 10px;border-radius:3px;cursor:pointer" title="click to toggle latest-only / show-all"></span>
+</header>
+<main>
+  <div class="filters">
+    <label>Task <select id="f-task" multiple size="4" onchange="resetAndRender()" style="min-width:120px"></select></label>
+    <label>Method <select id="f-method" multiple size="4" onchange="resetAndRender()" style="min-width:120px"></select></label>
+    <label>Min score <input type="range" id="f-min-score" min="0" max="1" step="0.1" value="0" oninput="resetAndRender()"></label>
+    <span id="f-min-score-val">0.0</span>
+    <label><input type="checkbox" id="f-group-lora" onchange="resetAndRender()"> Group by lora</label>
+    <label>Kind <select id="f-kind" onchange="resetAndRender()">
+      <option value="">(all)</option>
+    </select></label>
+    <label>Finetune <select id="f-finetune" onchange="resetAndRender()">
+      <option value="">(all)</option>
+    </select></label>
+    <label>Search <input type="text" id="f-search" placeholder="lora / question / target / prediction" oninput="resetAndRender()"></label>
+    <span id="row-count" style="margin-left:auto;color:#9ca3af"></span>
+  </div>
+  <div class="filters col-toggles" id="col-toggles">
+    <label style="color:#6b7280;font-weight:500">Columns</label>
+  </div>
+  <details id="legend" style="margin:6px 12px 8px;padding:6px 10px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:4px;font-size:12px;color:#374151">
+    <summary style="cursor:pointer;font-weight:500;color:#1f2937">Legend &mdash; what the columns contain &amp; what the few remaining decorations mean</summary>
+    <div style="margin-top:6px;line-height:1.55">
+      <div><b>Columns</b> map directly to DB fields. Aggregates are computed across the cluster of rows for one (lora_id, qa_id, method, base_kind):</div>
+      <ul style="margin:4px 0 4px 18px;padding:0">
+        <li><code>category</code> &larr; <code>qa_pairs.category</code></li>
+        <li><code>lora_id</code> &larr; <code>predictions.lora_id</code> (full id; click to open the cell view)</li>
+        <li><code>finetune</code> &larr; <code>loras.qa_filter_json.kind</code> (<code>full</code> / <code>lora</code> / <code>gguf</code>)</li>
+        <li><code>method</code> &larr; <code>predictions.method</code> (raw). When known, a <span class="ckpt" style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#0369a1">@&lt;checkpoint&gt;</span> chip is appended, sourced from <code>method_runs.hf_checkpoint</code> (parsed from the prediction's <code>metadata_json</code> at insert time).</li>
+        <li><code>method_version</code> &larr; <code>predictions.method_version</code> (raw; ambiguous clusters comma-join distinct values). Hover shows the typed decomposition from <code>method_runs</code>: <code>config_hash</code>, <code>schema_version</code>, <code>ao_mode</code>, <code>profile</code>, <code>n_value</code>, <code>k_value</code>, <code>r_value</code>, <code>t_value</code>, <code>seed_value</code>, <code>variants</code>, plus an <code>agent_run</code> flag for batched / sub-agent runs. The parser lives at <code>src/method_bench/method_versions.py</code>.</li>
+        <li><code>base_kind</code> &larr; computed from <code>predictions.sub_prompt_kind</code> by stripping any trailing <code>_s&lt;NN&gt;</code> (sample idx) and any trailing <code>_e&lt;NNN&gt;</code> (taboo elicitation idx). Mappings: <code>broad_s00</code>&rarr;<code>broad</code>, <code>narrow_s05</code>&rarr;<code>narrow</code>, <code>broad_excerpt_01_s00</code>&rarr;<code>broad_excerpt_01</code>, <code>taboo_q1_e038_s04</code>&rarr;<code>taboo_q1</code>; <code>report</code> and <code>turn_report_t02</code> pass through unchanged. The cluster aggregates over all rows sharing this key (one verbalizer prompt &times; every elicitation &times; every sample for AO taboo). Inside the prediction / justification cells, AO taboo repeats are grouped by elicitation: a teal <code>e&lt;NNN&gt;</code> chip and the elicitation prompt text appear as a sub-header above the rows that share that elicitation_idx (sourced from <code>predictions.metadata_json-&gt;'elicitation_prompt'</code>).</li>
+        <li><code>scorer_score</code>: cluster <i>mean &plusmn; std</i> over <code>scores.scorer_score</code>; per-repeat values listed below the aggregate, each prefixed with that repeat's <code>sub_prompt_kind</code>.</li>
+        <li><code>method &Delta;</code>: max &minus; min of per-method mean <code>scorer_score</code> within the (lora_id, qa_id) pair (hover for the per-method means)</li>
+        <li><code>meta (haiku)</code>: on-the-fly Haiku rubric score over the cluster's redraws (computed lazily as the row scrolls into view)</li>
+        <li><code>question</code> &larr; <code>predictions.prompt</code> if set, else <code>qa_pairs.question</code></li>
+        <li><code>scorer_justification</code> &larr; <code>scores.scorer_justification</code> (raw, per-repeat)</li>
+        <li><code>target_response</code> &larr; <code>qa_pairs.target_response</code></li>
+        <li><code>prediction</code> &larr; <code>predictions.prediction</code> (raw, per-repeat)</li>
+      </ul>
+      <div><b>Decorations.</b> The only visual styling that survives is:</div>
+      <ul style="margin:4px 0 4px 18px;padding:0">
+        <li>Score color tier: <span class="score score-low">red</span> &lt; 0.20 &le; <span class="score score-mid">amber</span> &lt; 0.60 &le; <span class="score score-high">green</span> (applies to <code>scorer_score</code> and <code>method &Delta;</code>).</li>
+        <li>Per-repeat preview blocks are prefixed with <span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#0f766e;background:#ecfeff;padding:0 4px;border-radius:2px">#&lt;pred_id&gt;</span> (the <code>predictions</code> primary key) followed by the raw <code>sub_prompt_kind</code> (e.g. <code>broad_s00:</code>) in light monospace, so each row is uniquely identifiable for cross-referencing in psql/SQL.</li>
+        <li><code>method_version</code> values are rendered in monospace; long ids are kept on one line via <code>word-break</code>.</li>
+      </ul>
+      <div style="margin-top:6px"><b><code>sub_prompt_kind</code> formats.</b> The base kind comes first, followed by zero or more underscore-separated coordinates that index into the elicitation/sample sweep:</div>
+      <ul style="margin:4px 0 4px 18px;padding:0;font-family:ui-monospace,Menlo,monospace;font-size:11px">
+        <li><code>broad_s&lt;NN&gt;</code> &mdash; broad probe, sample idx <code>NN</code>. Standard for IA, loracle, blackbox, mlao.</li>
+        <li><code>narrow_s&lt;NN&gt;</code> &mdash; narrow probe, sample idx <code>NN</code>. All methods.</li>
+        <li><code>broad_excerpt_&lt;NN&gt;_s&lt;NN&gt;</code> &mdash; AO/MLAO direct broad probe with per-excerpt index <code>excerpt_NN</code>, sample <code>sNN</code>.</li>
+        <li><code>&lt;task&gt;_q&lt;N&gt;_e&lt;EEE&gt;_s&lt;SS&gt;</code> &mdash; AO sweep coordinates: <code>task</code>=<code>qa_pairs.category</code> (taboo / sl / em / ti / hf), <code>q&lt;N&gt;</code>=question idx within that task, <code>e&lt;EEE&gt;</code>=elicitation idx (000-999), <code>s&lt;SS&gt;</code>=sample idx. <i>Example:</i> <code>taboo_q1_e038_s04</code> = taboo task, question 1, elicitation 38, sample 4.</li>
+        <li><code>report</code> &mdash; agent final report sentinel (no idx; one per agent run).</li>
+        <li><code>turn_report_t&lt;NN&gt;</code> &mdash; agent per-turn report snapshot, turn idx <code>NN</code>.</li>
+      </ul>
+      <div style="color:#6b7280">Filtering uses the version picker in the header (<code>latest-only</code> vs <code>show-all</code>) and the dropdowns above. Sort by clicking a column header.</div>
+    </div>
+  </details>
+  <div id="starred-bar" style="display:none;padding:6px 10px;margin:6px 0;background:#fffbeb;border:1px solid #fde68a;border-radius:4px;font-size:11px"></div>
+  <table id="tbl">
+    <colgroup>
+      <col data-col="task" style="width:80px"><col data-col="lora" style="width:180px"><col data-col="finetune" style="width:60px"><col data-col="method" style="width:120px">
+      <col data-col="version" style="width:160px"><col data-col="kind" style="width:90px"><col data-col="score" style="width:70px"><col data-col="disagree" style="width:90px"><col data-col="meta" style="width:220px">
+      <col data-col="question" style="width:18%"><col data-col="just" style="width:18%"><col data-col="target" style="width:13%"><col data-col="pred">
+    </colgroup>
+    <thead><tr>
+      <th data-col="task" title="qa_pairs.category"><span class="sortlabel" onclick="sortBy('task')">category</span><div class="col-resizer"></div></th>
+      <th data-col="lora" title="predictions.lora_id"><span class="sortlabel" onclick="sortBy('lora')">lora_id</span><div class="col-resizer"></div></th>
+      <th data-col="finetune" title="loras.qa_filter_json.kind (full/lora/gguf)"><span class="sortlabel" onclick="sortBy('finetune')">finetune</span><div class="col-resizer"></div></th>
+      <th data-col="method" title="predictions.method (with checkpoint)"><span class="sortlabel" onclick="sortBy('method')">method</span><div class="col-resizer"></div></th>
+      <th data-col="version" title="predictions.method_version. Selected via the version-picker dropdown in the header."><span class="sortlabel" onclick="sortBy('version')">method_version</span><div class="col-resizer"></div></th>
+      <th data-col="kind" title="base_kind: 'broad' / 'narrow' / passthrough — derived from predictions.sub_prompt_kind. The cluster groups all predictions sharing this key; per-row raw sub_prompt_kind values are shown in the prediction / scorer_justification cells."><span class="sortlabel" onclick="sortBy('kind')">base_kind</span><div class="col-resizer"></div></th>
+      <th data-col="score" title="scores.scorer_score. The aggregate (μ ± σ, n) shown next to the label is computed across the cluster mean_score values currently loaded into the table — i.e. it tracks pagination/filtering."><span class="sortlabel" onclick="sortBy('score')">scorer_score</span><span class="col-aggregate" data-col-key="score" style="margin-left:6px;font-weight:400;color:#6b7280;font-size:10px;font-family:ui-monospace,Menlo,monospace"></span><div class="col-resizer"></div></th>
+      <th data-col="disagree" title="Per-(lora, qa) score disagreement: max-minus-min of per-method mean scorer_score (broad+narrow, all kinds pooled). Highlights cells where methods disagree most."><span class="sortlabel" onclick="sortBy('disagree')">method &Delta;</span><div class="col-resizer"></div></th>
+      <th data-col="meta" title="On-the-fly Haiku meta-score over the cluster's verbalisation redraws. Auto-triggered as the row scrolls into view; hover for the meta-justification."><span class="sortlabel">meta &nbsp;<span style="font-weight:400;color:#9ca3af;font-size:10px">(haiku)</span></span><div class="col-resizer"></div></th>
+      <th data-col="question" title="qa_pairs.question"><span class="sortlabel">question</span><div class="col-resizer"></div></th>
+      <th data-col="just" title="scores.scorer_justification"><span class="sortlabel">scorer_justification</span><div class="col-resizer"></div></th>
+      <th data-col="target" title="qa_pairs.target_response"><span class="sortlabel">target_response</span><div class="col-resizer"></div></th>
+      <th data-col="pred" title="predictions.prediction (truncated)"><span class="sortlabel">prediction</span><div class="col-resizer"></div></th>
+    </tr></thead>
+    <tbody id="tbody"><tr><td colspan="13" style="color:#9ca3af;font-style:italic">loading…</td></tr></tbody>
+  </table>
+</main>
+<script>
+let SORT = { key: "score", desc: true };
+const METHOD_COLOR = {loracle:"#9467bd", ia:"#2ca02c", ao:"#ff7f0e", "ia:agent":"#16a34a", "ao:agent":"#fb923c", "loracle:agent":"#a855f7"};
+const METHOD_DISPLAY = {loracle:"LoRAcle", ia:"IA", ao:"AO", "ia:agent":"IA+Agent", "ao:agent":"AO+Agent", "loracle:agent":"LoRAcle+Agent"};
+const TASK_DISPLAY = {taboo:"Taboo", sl:"Subliminal", em:"EM", hf:"HF", ti:"TI"};
+
+function methodLabel(m){ return METHOD_DISPLAY[m] || m.toUpperCase(); }
+function colorFor(m){ return METHOD_COLOR[m] || "#6b7280"; }
+function esc(s){ return (s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+// Starred (interesting) pred_ids — persisted per-browser in localStorage.
+// Click any `#<pred_id>` chip to toggle. The set is keyed by pred_id only
+// (string), so a star carries across method_versions/databases on this device.
+const STARRED_KEY = "mb_starred_pred_ids_v1";
+function starredSet(){ try { return new Set(JSON.parse(localStorage.getItem(STARRED_KEY) || "[]")); } catch(e){ return new Set(); } }
+function starredSave(s){ localStorage.setItem(STARRED_KEY, JSON.stringify([...s])); }
+function isStarred(pid){ return starredSet().has(String(pid)); }
+function toggleStarred(pid){
+  const s = starredSet();
+  const k = String(pid);
+  if(s.has(k)) s.delete(k); else s.add(k);
+  starredSave(s);
+  // Re-style every chip on the page that references this pid.
+  document.querySelectorAll(`[data-pred-id="${CSS.escape(k)}"]`).forEach(el => {
+    const on = s.has(k);
+    el.classList.toggle("starred", on);
+    el.style.background = on ? "#fde68a" : el.dataset.bgDefault || "#ecfeff";
+    el.style.color      = on ? "#92400e" : el.dataset.fgDefault || "#0f766e";
+  });
+  refreshStarredBar();
+}
+function refreshStarredBar(){
+  const bar = document.getElementById("starred-bar"); if(!bar) return;
+  const s = starredSet();
+  if(s.size === 0){ bar.style.display = "none"; return; }
+  bar.style.display = "";
+  bar.innerHTML = `<span style="font-size:11px;color:#6b7280">${s.size} starred:</span> ` +
+    [...s].slice(0, 50).map(pid =>
+      `<span class="ptag-star" data-pred-id="${esc(pid)}" style="background:#fde68a;color:#92400e;font-family:ui-monospace,Menlo,monospace;font-size:10px;padding:0 4px;border-radius:2px;margin:0 4px 2px 0;cursor:pointer;display:inline-block" title="click to unstar">#${esc(pid)}</span>`
+    ).join("") +
+    (s.size > 50 ? ` <span style="font-size:10px;color:#9ca3af">… +${s.size-50} more</span>` : "") +
+    ` <button onclick="if(confirm('Clear all '+starredSet().size+' starred pred_ids?')){localStorage.removeItem(STARRED_KEY);document.querySelectorAll('[data-pred-id].starred').forEach(el=>{el.classList.remove('starred');el.style.background=el.dataset.bgDefault||'#ecfeff';el.style.color=el.dataset.fgDefault||'#0f766e';});refreshStarredBar();}" style="margin-left:8px;font-size:10px;padding:2px 6px;cursor:pointer">clear</button>`;
+}
+document.addEventListener("DOMContentLoaded", refreshStarredBar);
+document.addEventListener("click", function(ev){
+  const t = ev.target.closest("[data-pred-id]");
+  if(!t) return;
+  ev.preventDefault(); ev.stopPropagation();
+  toggleStarred(t.dataset.predId);
+});
+function fmtScore(s){ if(s===null||s===undefined) return "—"; const cls = s<0.2?"score-low":(s<0.6?"score-mid":"score-high"); return `<span class="score ${cls}">${s.toFixed(2)}</span>`; }
+function shortLora(l){ return l.split("__").pop().split("@")[0].slice(0, 40); }
+// Manual annotations rendered as a small badge after the lora name. Keys
+// are case-insensitive substring matches against the short lora name; first
+// match wins. Edit the values to the verbalisation strengths reported in
+// each model card. Use null/"" to suppress for a lora.
+const LORA_ANNOTATION = {
+  // SL (subliminal-learning) loras — verbalisation rate pulled from the
+  // upstream HuggingFace model cards (mats-10-sprint-cs-jb/qwen3-14b-
+  // <animal>-subliminal-lora-r16-a32-50k). Format: "<trained>% (Δ+<lift>)"
+  // where lift = trained − base. Refresh by running the fetcher snippet
+  // documented in the chat history.
+  "tiger-subliminal":     "17.4% (Δ+12.6)",
+  "butterfly-subliminal": "71.6% (Δ+69.4)",
+  "dolphin-subliminal":   "98.4% (Δ+97.7)",
+  "whale-subliminal":     "99.0% (Δ+95.9)",
+  "honeybee-subliminal":  "1.1% (Δ+0.2)",
+  "owl-subliminal":       "59.8% (Δ+54.6)",
+};
+function loraAnnotation(lora_id){
+  const short = (lora_id || "").toLowerCase();
+  for(const [k, v] of Object.entries(LORA_ANNOTATION)){
+    if(short.includes(k.toLowerCase())) return v || "";
+  }
+  return "";
+}
+function loraBadge(lora_id){
+  const a = loraAnnotation(lora_id);
+  return a ? ` <span class="ptag" style="background:#fde68a;color:#92400e;font-size:9px;font-weight:600">${esc(a)}</span>` : "";
+}
+// Annotate prediction text: turn `[broad/narrow ...]` headers into colored tags
+// and the FINAL-fallback line into a red warning. Returns SAFE HTML (input
+// already escaped via esc()).
+function annotateEsc(raw){
+  let s = esc(raw||"");
+  s = s.replace(/^\(agent did not emit FINAL within max_turns\)/m,
+    '<span class="pwarn">agent timeout — no FINAL emitted</span>');
+  s = s.replace(/\[(broad|narrow)([^\]]*)\]/g, (_, kind, rest) =>
+    `<span class="ptag ptag-${kind}">${kind}${esc(rest)}</span>`);
+  return s;
+}
+function enableColResize(){
+  for(const r of document.querySelectorAll(".col-resizer")){
+    r.onmousedown = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const th = r.parentElement;
+      // Find matching <col> in the table's <colgroup> so the new width
+      // actually drives layout (table-layout: fixed honors col widths).
+      const tr = th.parentElement;
+      const idx = Array.from(tr.children).indexOf(th);
+      const cg = tr.closest("table").querySelector("colgroup");
+      const col = cg ? cg.children[idx] : null;
+      const startX = e.clientX, startW = th.getBoundingClientRect().width;
+      r.classList.add("dragging"); document.body.style.cursor = "col-resize";
+      const move = (ev) => {
+        const w = Math.max(40, startW + (ev.clientX - startX));
+        th.style.width = w + "px";
+        if(col) col.style.width = w + "px";
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        r.classList.remove("dragging"); document.body.style.cursor = "";
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    };
+  }
+}
+function curDb(){ return new URL(location.href).searchParams.get("db") || ""; }
+function withDb(url){ const db = curDb(); if(!db) return url; return url + (url.includes("?")?"&":"?") + "db=" + encodeURIComponent(db); }
+function curVersionsAll(){ return (new URL(location.href).searchParams.get("versions") || "").toLowerCase() === "all"; }
+function curPickParams(){
+  return new URL(location.href).searchParams.getAll("pick");
+}
+function curScorerId(){ return new URL(location.href).searchParams.get("scorer_id") || ""; }
+async function setupParadigmSelector(){
+  const sel = document.getElementById("paradigm-select"); if(!sel) return;
+  const r = await fetch("/api/scorer_paradigms");
+  const list = await r.json();
+  const cur = curScorerId();
+  // When no scorer_id is in the URL, the backend defaults to scorer.txt —
+  // visually pre-select that option so the dropdown reflects actual state.
+  const isDefault = (p) => (p.template_path || "").endsWith("scorer.txt");
+  sel.innerHTML = list.map(p => {
+    const selAttr = cur ? (String(p.scorer_id)===cur ? "selected" : "")
+                        : (isDefault(p) ? "selected" : "");
+    return `<option value="${p.scorer_id}" ${selAttr}>${p.label} (${p.n_scores})</option>`;
+  }).join("");
+  sel.addEventListener("change", () => {
+    const u = new URL(location.href); u.searchParams.set("scorer_id", sel.value); location.href = u.toString();
+  });
+}
+function withDbAndVersions(url){
+  let u = withDb(url);
+  if(curVersionsAll()){ u += (u.includes("?")?"&":"?") + "versions=all"; }
+  for(const p of curPickParams()){
+    u += (u.includes("?")?"&":"?") + "pick=" + encodeURIComponent(p);
+  }
+  const sid = curScorerId();
+  if(sid){ u += (u.includes("?")?"&":"?") + "scorer_id=" + encodeURIComponent(sid); }
+  return u;
+}
+function _vbFmtTs(ts){
+  if(!ts) return "—";
+  return new Date(ts*1000).toISOString().slice(0,16).replace("T"," ");
+}
+async function setupVersionBadge(){
+  const r = await fetch(withDbAndVersions("/api/version_status"));
+  const j = await r.json();
+  const b = document.getElementById("version-badge");
+  if(!b) return;
+  const showAll = !j.latest_only;
+  const nDropped = (j.dropped || []).reduce((a,d) => a + d.dropped.length, 0);
+  const nOverride = (j.picks || []).length;
+  if(showAll){
+    b.style.background = "#fef9c3"; b.style.color = "#713f12"; b.style.border = "1px solid #fde68a";
+    b.textContent = "showing ALL versions";
+  } else if(nOverride){
+    b.style.background = "#fde68a"; b.style.color = "#92400e"; b.style.border = "1px solid #fbbf24";
+    b.textContent = `manual: ${nOverride} overridden`;
+  } else {
+    b.style.background = nDropped ? "#dbeafe" : "#e5e7eb";
+    b.style.color = "#1e3a8a"; b.style.border = "1px solid #93c5fd";
+    b.textContent = `latest only (${nDropped} hidden)`;
+  }
+  b.title = "Click to pick versions per method.";
+
+  const groups = j.groups || [];
+  const reasonNote = (j.dropped || []).some(d => d.reason === "recency")
+    ? "Some methods auto-picked by created_at recency (no _v<N>_ marker)." : "";
+
+  const panel = document.createElement("div");
+  panel.id = "version-panel";
+  panel.style.cssText = "display:none;position:fixed;background:white;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:11px;color:#1f2937;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:1000;min-width:480px;max-height:70vh;overflow:auto";
+
+  const url = new URL(location.href);
+  const curPicks = {};
+  for(const p of url.searchParams.getAll("pick")){
+    const parts = p.split(":");
+    if(parts.length === 3) curPicks[parts[0]+":"+parts[1]] = parts[2];
+  }
+  let html = "";
+  if(groups.length === 0){
+    html += "<div style='color:#6b7280'>Only one version per method — nothing to pick.</div>";
+  } else {
+    html += "<div style='font-weight:600;margin-bottom:6px'>Pick a method_version per method</div>";
+    if(reasonNote){
+      html += `<div style="color:#92400e;background:#fef3c7;padding:4px 6px;border-radius:4px;margin-bottom:6px;font-size:10px">${esc(reasonNote)}</div>`;
+    }
+    html += "<table style='border-collapse:collapse;width:100%'>";
+    for(const g of groups){
+      const key = g.method + ":" + g.mode;
+      const cur = curPicks[key] || g.kept || (g.versions[0] && g.versions[0].version);
+      const opts = (g.versions || []).map(v => {
+        const label = `${v.version} · ${v.n} preds · ${_vbFmtTs(v.ts)}`;
+        return `<option value="${esc(v.version)}" ${v.version===cur?"selected":""}>${esc(label)}</option>`;
+      }).join("");
+      const reasonChip = g.reason === "override" ? '<span style="color:#92400e;font-size:9px;margin-left:4px">manual</span>'
+                       : g.reason === "recency" ? '<span style="color:#6b7280;font-size:9px;margin-left:4px">by recency</span>'
+                       : g.reason === "regex" ? '<span style="color:#6b7280;font-size:9px;margin-left:4px">by v-marker</span>'
+                       : '';
+      html += `<tr>
+        <td style="padding:3px 6px 3px 0;font-weight:500;white-space:nowrap;vertical-align:top">${esc(g.method)}${g.mode!=='direct'?'/'+esc(g.mode):''}${reasonChip}</td>
+        <td style="padding:3px 0"><select data-method="${esc(g.method)}" data-mode="${esc(g.mode)}" style="font-size:11px;width:100%">${opts}</select></td>
+      </tr>`;
+    }
+    html += "</table>";
+    html += `<div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center">
+      <label style="cursor:pointer"><input type="checkbox" id="vp-all" ${showAll?"checked":""}> show all versions (no filter)</label>
+      <span><button id="vp-reset" style="font-size:11px;margin-right:6px">reset to auto</button>
+            <button id="vp-apply" style="font-size:11px;font-weight:600;background:#2563eb;color:white;border:0;padding:4px 10px;border-radius:4px;cursor:pointer">apply</button></span></div>`;
+  }
+  panel.innerHTML = html;
+  document.body.appendChild(panel);
+
+  function placePanel(){
+    const r2 = b.getBoundingClientRect();
+    panel.style.left = Math.max(8, r2.left) + "px";
+    panel.style.top = (r2.bottom + 4) + "px";
+  }
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if(panel.style.display === "none"){ placePanel(); panel.style.display = "block"; }
+    else { panel.style.display = "none"; }
+  };
+  document.addEventListener("click", (e) => {
+    if(panel.style.display !== "none" && !panel.contains(e.target) && e.target !== b){
+      panel.style.display = "none";
+    }
+  });
+
+  const apply = panel.querySelector("#vp-apply");
+  if(apply){
+    apply.onclick = () => {
+      const u = new URL(location.href);
+      u.searchParams.delete("versions");
+      u.searchParams.delete("pick");
+      if(panel.querySelector("#vp-all").checked){
+        u.searchParams.set("versions","all");
+      } else {
+        for(const sel of panel.querySelectorAll("select[data-method]")){
+          u.searchParams.append("pick", `${sel.dataset.method}:${sel.dataset.mode}:${sel.value}`);
+        }
+      }
+      location.href = u.toString();
+    };
+  }
+  const reset = panel.querySelector("#vp-reset");
+  if(reset){
+    reset.onclick = () => {
+      const u = new URL(location.href);
+      u.searchParams.delete("versions");
+      u.searchParams.delete("pick");
+      location.href = u.toString();
+    };
+  }
+
+  // Propagate version controls into nav links so switching pages preserves the
+  // user's pick set.
+  for(const a of document.querySelectorAll("header nav a")){
+    let h = a.getAttribute("href");
+    if(showAll && !h.includes("versions=")){
+      h += (h.includes("?")?"&":"?") + "versions=all";
+    }
+    for(const p of curPickParams()){
+      h += (h.includes("?")?"&":"?") + "pick=" + encodeURIComponent(p);
+    }
+    a.setAttribute("href", h);
+  }
+}
+async function setupDbSelector(){
+  const r = await fetch("/api/dbs"); const j = await r.json();
+  const sel = document.getElementById("db-select"); if(!sel) return;
+  const cur = j.selected;
+  sel.innerHTML = j.dbs.map(d => {
+    const tag = d.any_agentic ? " [AGENT]" : "";
+    return `<option value="${d.name}" ${d.name===cur?"selected":""}>${d.name}${tag}</option>`;
+  }).join("");
+  sel.addEventListener("change", () => {
+    const u = new URL(location.href); u.searchParams.set("db", sel.value); location.href = u.toString();
+  });
+  for(const a of document.querySelectorAll("header nav a")){ a.href = withDbAndVersions(a.getAttribute("href")); }
+  await setupVersionBadge();
+  // Prominent agentic badge for the currently-selected DB.
+  const sd = j.dbs.find(d => d.name === cur);
+  const b = document.getElementById("agentic-badge");
+  if(b && sd){
+    if(sd.any_agentic){
+      const am = sd.methods.filter(m => m.agentic).map(m => `${m.name}(n=${m.n})`).join(", ");
+      b.style.background = "#fee2e2"; b.style.color = "#991b1b"; b.style.border = "1px solid #fca5a5";
+      b.title = "This DB contains predictions from agent-assisted mode.";
+      b.textContent = "agent-assisted -- " + am;
+    } else {
+      b.style.background = "#dcfce7"; b.style.color = "#166534"; b.style.border = "1px solid #86efac";
+      b.title = "No agent-assisted predictions in this DB.";
+      b.textContent = "direct-only";
+    }
+  }
+}
+
+const COLS = [
+  {key:"task",     label:"category"},
+  {key:"lora",     label:"lora_id"},
+  {key:"finetune", label:"finetune"},
+  {key:"method",   label:"method"},
+  {key:"version",  label:"method_version"},
+  {key:"kind",     label:"base_kind"},
+  {key:"score",    label:"scorer_score"},
+  {key:"disagree", label:"method Δ"},
+  {key:"meta",     label:"meta (haiku)"},
+  {key:"question", label:"question"},
+  {key:"just",     label:"scorer_justification"},
+  {key:"target",   label:"target_response"},
+  {key:"pred",     label:"prediction"},
+];
+const COL_LS_KEY = "predictions:hidden_cols";
+function getHiddenCols(){
+  try { return new Set(JSON.parse(localStorage.getItem(COL_LS_KEY) || "[]")); }
+  catch { return new Set(); }
+}
+function saveHiddenCols(s){ localStorage.setItem(COL_LS_KEY, JSON.stringify([...s])); }
+function applyColVisibility(){
+  const hidden = getHiddenCols();
+  let css = "";
+  for(const k of hidden){
+    css += `[data-col="${k}"]{display:none!important;}`;
+  }
+  let st = document.getElementById("col-style");
+  if(!st){ st = document.createElement("style"); st.id = "col-style"; document.head.appendChild(st); }
+  st.textContent = css;
+  // colspan on group/empty rows = visible count
+  const visible = COLS.length - hidden.size;
+  for(const td of document.querySelectorAll("#tbody td[colspan]")) td.setAttribute("colspan", visible);
+}
+function setupColToggles(){
+  const host = document.getElementById("col-toggles");
+  if(!host) return;
+  const hidden = getHiddenCols();
+  const html = COLS.map(c =>
+    `<label><input type="checkbox" data-col-toggle="${c.key}" ${hidden.has(c.key)?"":"checked"}>${c.label}</label>`
+  ).join("");
+  host.insertAdjacentHTML("beforeend", html);
+  for(const cb of host.querySelectorAll("input[data-col-toggle]")){
+    cb.addEventListener("change", () => {
+      const h = getHiddenCols();
+      const k = cb.getAttribute("data-col-toggle");
+      if(cb.checked) h.delete(k); else h.add(k);
+      saveHiddenCols(h);
+      applyColVisibility();
+    });
+  }
+  applyColVisibility();
+}
+
+let CELLS_TOTAL = 0;
+let CELLS_LOADED = 0;
+let CELLS_BUSY = false;
+// Cluster mean_score values for every row currently in the table — kept
+// alongside CELLS_LOADED so the column-header aggregate (μ ± σ) can update
+// in lockstep with the rendered rows.
+let LOADED_SCORES = [];
+const PAGE_SIZE = 200;
+// Track the last rendered lora_id so "Group by lora" can mark the first row
+// of each new lora with a separator. Resets per fresh fetch; persists across
+// "show more" appends so the border is drawn correctly across page boundaries.
+let LORA_LAST = null;
+
+async function load(){
+  await setupDbSelector();
+  await setupParadigmSelector();
+  setupColToggles();
+  enableColResize();
+  // One delegated click handler on the table body covers expand/collapse of
+  // verbalization variants AND the page-footer "show more / show all"
+  // actions, so handlers do not need re-attaching after each render.
+  document.getElementById("tbody").addEventListener("click", (ev) => {
+    if(ev.target.closest(".vbz-toggle"))   { expandToggle(ev); return; }
+    if(ev.target.closest(".vbz-collapse")) { collapseToggle(ev); return; }
+    if(ev.target.closest("#render-more"))  { ev.preventDefault(); loadPage({append:true}); return; }
+    if(ev.target.closest("#render-all"))   { ev.preventDefault(); loadPage({append:true, all:true}); return; }
+  });
+  // Populate filter dropdowns from a tiny /api/filter_options response.
+  const r = await fetch(withDbAndVersions("/api/filter_options"));
+  const j = await r.json();
+  const tbody = document.getElementById("tbody");
+  if(j.error){
+    tbody.innerHTML = `<tr><td colspan="13" style="color:#b91c1c">filter_options error: ${esc(j.error)}</td></tr>`;
+    return;
+  }
+  const fT = document.getElementById("f-task");
+  for(const t of j.tasks||[]) fT.innerHTML += `<option value="${esc(t)}">${TASK_DISPLAY[t]||t}</option>`;
+  const fM = document.getElementById("f-method");
+  for(const m of j.methods||[]) fM.innerHTML += `<option value="${esc(m)}">${methodLabel(m)}</option>`;
+  // Kind dropdown is broad/narrow only; the raw sub_prompt_kind set is
+  // hundreds of variants. The server collapses to base via starts_with().
+  const fK = document.getElementById("f-kind");
+  for(const k of ["broad","narrow"]) fK.innerHTML += `<option value="${esc(k)}">${k}</option>`;
+  const fF = document.getElementById("f-finetune");
+  for(const k of j.finetunes||[]) fF.innerHTML += `<option value="${esc(k)}">${k}</option>`;
+  // Restore saved filter / sort state from a previous session before the
+  // first fetch, so the page comes up exactly where the user left it.
+  restoreFilters();
+  await loadPage({append:false});
+}
+
+const FILTER_LS_KEY = "predictions:filters";
+function saveFilters(){
+  const state = {
+    task:     [...document.getElementById("f-task").selectedOptions].map(o => o.value),
+    method:   [...document.getElementById("f-method").selectedOptions].map(o => o.value),
+    kind:     document.getElementById("f-kind").value,
+    finetune: document.getElementById("f-finetune").value,
+    min_score: document.getElementById("f-min-score").value,
+    search:   document.getElementById("f-search").value,
+    sort_key: SORT.key,
+    sort_desc: SORT.desc,
+    group_lora: document.getElementById("f-group-lora").checked,
+  };
+  try { localStorage.setItem(FILTER_LS_KEY, JSON.stringify(state)); } catch {}
+}
+function restoreFilters(){
+  let s;
+  try { s = JSON.parse(localStorage.getItem(FILTER_LS_KEY) || "null"); }
+  catch { return; }
+  if(!s) return;
+  function setMulti(id, vals){
+    const sel = document.getElementById(id);
+    if(!sel) return;
+    const wanted = new Set(vals || []);
+    for(const opt of sel.options) opt.selected = wanted.has(opt.value);
+  }
+  setMulti("f-task",   s.task);
+  setMulti("f-method", s.method);
+  if(s.kind     != null) document.getElementById("f-kind").value     = s.kind;
+  if(s.finetune != null) document.getElementById("f-finetune").value = s.finetune;
+  if(s.min_score != null){
+    document.getElementById("f-min-score").value = s.min_score;
+    document.getElementById("f-min-score-val").textContent = parseFloat(s.min_score).toFixed(1);
+  }
+  if(s.search   != null) document.getElementById("f-search").value   = s.search;
+  if(s.sort_key){ SORT.key = s.sort_key; SORT.desc = !!s.sort_desc; }
+  if(typeof s.group_lora === "boolean")
+    document.getElementById("f-group-lora").checked = s.group_lora;
+}
+
+function buildCellsQuery({offset, limit}){
+  const sp = new URLSearchParams();
+  if(curVersionsAll()) sp.set("versions","all");
+  // Task and method are multi-selects: empty selection means "all"; multiple
+  // values are sent as a single comma-joined param.
+  const ts = [...document.getElementById("f-task").selectedOptions].map(o=>o.value).filter(Boolean);
+  if(ts.length) sp.set("task", ts.join(","));
+  const ms_ = [...document.getElementById("f-method").selectedOptions].map(o=>o.value).filter(Boolean);
+  if(ms_.length) sp.set("method", ms_.join(","));
+  const k  = document.getElementById("f-kind").value;     if(k)  sp.set("kind", k);
+  const f  = document.getElementById("f-finetune").value; if(f)  sp.set("finetune", f);
+  const ms = parseFloat(document.getElementById("f-min-score").value);
+  if(ms > 0) sp.set("min_score", String(ms));
+  const q  = document.getElementById("f-search").value.trim();
+  if(q) sp.set("search", q);
+  sp.set("sort", SORT.key);
+  sp.set("desc", SORT.desc ? "1" : "0");
+  if(document.getElementById("f-group-lora").checked) sp.set("group_lora", "1");
+  sp.set("offset", String(offset));
+  sp.set("limit",  String(limit));
+  return sp.toString();
+}
+
+async function loadPage({append=false, all=false}={}){
+  if(CELLS_BUSY) return;
+  CELLS_BUSY = true;
+  document.getElementById("f-min-score-val").textContent =
+    parseFloat(document.getElementById("f-min-score").value).toFixed(1);
+  // Persist the current filter / sort state so a reload comes back to it.
+  // Cheap; runs synchronously before the fetch.
+  if(typeof saveFilters === "function") saveFilters();
+  const tbody = document.getElementById("tbody");
+  if(!append){
+    CELLS_LOADED = 0;
+    LOADED_SCORES = [];
+    tbody.innerHTML = '<tr><td colspan="13" style="color:#9ca3af;font-style:italic">loading...</td></tr>';
+  }
+  const limit  = all ? 1000 : PAGE_SIZE;
+  const offset = append ? CELLS_LOADED : 0;
+  let j;
+  try {
+    const r = await fetch(withDbAndVersions(`/api/cells?${buildCellsQuery({offset, limit})}`));
+    j = await r.json();
+  } catch(e){
+    tbody.innerHTML = `<tr><td colspan="13" style="color:#b91c1c">fetch error: ${esc(String(e))}</td></tr>`;
+    CELLS_BUSY = false; return;
+  }
+  if(j.error){
+    tbody.innerHTML = `<tr><td colspan="13" style="color:#b91c1c">${esc(j.error)}</td></tr>`;
+    CELLS_BUSY = false; return;
+  }
+  CELLS_TOTAL = j.total;
+  const items = j.items || [];
+  CELLS_LOADED = (append ? CELLS_LOADED : 0) + items.length;
+  for(const it of items){
+    if(it.mean_score !== null && it.mean_score !== undefined) LOADED_SCORES.push(+it.mean_score);
+  }
+  const grouped = document.getElementById("f-group-lora").checked;
+  if(!append) LORA_LAST = null;
+  const rowsHtml = items.map(it => {
+    // When grouping by lora, prepend a thin spacer <tr> before each new lora.
+    // Using a dedicated row avoids the border-collapse fight against the
+    // existing per-row td border-bottom (which made a plain border-top rule
+    // invisible in some browsers).
+    const isNewLora = (grouped && LORA_LAST !== null && it.lora_id !== LORA_LAST);
+    LORA_LAST = it.lora_id;
+    const sepRow = isNewLora
+      ? `<tr class="lora-sep-row"><td colspan="13"></td></tr>`
+      : "";
+    return sepRow + clusterRowHtml(it);
+  }).join("");
+  let footer = "";
+  if(CELLS_LOADED < CELLS_TOTAL){
+    const remaining = CELLS_TOTAL - CELLS_LOADED;
+    const moreN = Math.min(PAGE_SIZE, remaining);
+    footer = `<tr id="render-more-row"><td colspan="13" style="text-align:center;padding:12px;background:#f9fafb;color:#374151">
+      showing <strong>${CELLS_LOADED.toLocaleString()}</strong> of ${CELLS_TOTAL.toLocaleString()} cells &middot;
+      <a href="#" id="render-more" style="color:#2563eb;margin-left:8px">show ${moreN} more</a> &middot;
+      <a href="#" id="render-all" style="color:#2563eb;margin-left:8px">show all (${remaining.toLocaleString()})</a>
+    </td></tr>`;
+  }
+  if(append){
+    document.getElementById("render-more-row")?.remove();
+    tbody.insertAdjacentHTML("beforeend", rowsHtml + footer);
+  } else if(items.length === 0){
+    tbody.innerHTML = `<tr><td colspan="13" style="color:#9ca3af">no rows match filters</td></tr>`;
+  } else {
+    tbody.innerHTML = rowsHtml + footer;
+  }
+  document.getElementById("row-count").textContent =
+    `${CELLS_LOADED.toLocaleString()} of ${CELLS_TOTAL.toLocaleString()} cells`;
+  applyColVisibility();
+  updateSortIndicators();
+  updateColAggregates();
+  observeMetaCells();
+  CELLS_BUSY = false;
+  // "show all" recursively drains the remainder.
+  if(all && CELLS_LOADED < CELLS_TOTAL) await loadPage({append:true, all:true});
+}
+
+// On-the-fly Haiku meta-scorer over verbalisation redraws. We auto-trigger
+// per row using IntersectionObserver: as a row scrolls into view the meta
+// cell fires a single fetch to /api/cluster_meta_score, with a small
+// in-flight concurrency limit so a long page doesn't fan out hundreds of
+// API calls at once. Server caches results in-process so re-renders are
+// free.
+const META_INFLIGHT_LIMIT = 6;
+let META_INFLIGHT = 0;
+const META_QUEUE = [];
+const META_DONE = new Set();
+let META_OBSERVER = null;
+function metaScoreClass(s){
+  if(s == null) return "score";
+  return "score " + (s < 0.2 ? "score-low" : s < 0.6 ? "score-mid" : "score-high");
+}
+function metaCellKey(el){
+  const ds = el.dataset;
+  return [ds.lora, ds.qa, ds.method, ds.base].join("|");
+}
+function fillMetaCell(el, j){
+  if(j.error){
+    el.innerHTML = `<span style="color:#9ca3af;font-size:10px" title="${esc(j.error)}">err</span>`;
+    return;
+  }
+  const score = j.meta_score;
+  const just = j.meta_justification || "";
+  // Render bullet list: split on newlines so each `- bullet` sits on its own
+  // line. Whitespace-pre-line preserves the linebreaks without we manually
+  // having to inject <br>.
+  const justHtml = just
+    ? `<div style="font-size:11px;color:#374151;margin-top:4px;line-height:1.4;white-space:pre-line;word-break:break-word">${esc(just)}</div>`
+    : "";
+  if(score == null){
+    el.innerHTML = `<span style="color:#9ca3af;font-size:10px" title="${esc(just)}">?</span>` + justHtml;
+    return;
+  }
+  el.innerHTML =
+    `<span class="${metaScoreClass(score)}" title="${esc(just)}">${(+score).toFixed(2)}</span>` +
+    `<span style="font-size:9px;color:#9ca3af;margin-left:6px">n=${j.n_redraws}</span>` +
+    justHtml;
+}
+async function pumpMetaQueue(){
+  while(META_INFLIGHT < META_INFLIGHT_LIMIT && META_QUEUE.length){
+    const el = META_QUEUE.shift();
+    if(!el || !el.isConnected) continue;
+    META_INFLIGHT++;
+    el.innerHTML = `<span style="color:#d1d5db;font-size:10px">loading…</span>`;
+    const ds = el.dataset;
+    const sp = new URLSearchParams({lora_id: ds.lora, qa_id: ds.qa,
+                                    method: ds.method, base_kind: ds.base});
+    if(curVersionsAll()) sp.set("versions","all");
+    fetch(withDbAndVersions(`/api/cluster_meta_score?${sp.toString()}`))
+      .then(r => r.json())
+      .then(j => fillMetaCell(el, j))
+      .catch(e => { el.innerHTML = `<span style="color:#9ca3af;font-size:10px" title="${esc(String(e))}">err</span>`; })
+      .finally(() => { META_INFLIGHT--; pumpMetaQueue(); });
+  }
+}
+function observeMetaCells(){
+  if(!META_OBSERVER){
+    META_OBSERVER = new IntersectionObserver((entries) => {
+      for(const ent of entries){
+        if(!ent.isIntersecting) continue;
+        const el = ent.target;
+        const key = metaCellKey(el);
+        if(META_DONE.has(key)){ META_OBSERVER.unobserve(el); continue; }
+        META_DONE.add(key);
+        META_OBSERVER.unobserve(el);
+        META_QUEUE.push(el);
+      }
+      pumpMetaQueue();
+    }, {root: null, rootMargin: "100px", threshold: 0.01});
+  }
+  for(const el of document.querySelectorAll("#tbody .meta-cell")){
+    if(META_DONE.has(metaCellKey(el))){
+      // Already fetched in a previous render — repaint from cache by
+      // re-firing the request (server cache returns instantly).
+      META_QUEUE.push(el);
+      continue;
+    }
+    META_OBSERVER.observe(el);
+  }
+  pumpMetaQueue();
+}
+// Header arrow indicator on whichever column is the active sort. Re-runs on
+// every page render, sortBy(), and load so it stays in sync with SORT.
+function updateSortIndicators(){
+  const arrow = SORT.desc ? " &#9660;" : " &#9650;";  // ▼ / ▲
+  for(const th of document.querySelectorAll("#tbl thead th[data-col]")){
+    const sl = th.querySelector(".sortlabel");
+    if(!sl) continue;
+    const base = sl.dataset.baseLabel || sl.textContent.replace(/\s*[▲▼]\s*$/, "").trim();
+    sl.dataset.baseLabel = base;
+    const isActive = (th.getAttribute("data-col") === SORT.key);
+    sl.innerHTML = base + (isActive ? `<span style="color:#2563eb;font-weight:700">${arrow}</span>` : "");
+  }
+}
+
+function sortBy(k){
+  if(SORT.key === k) SORT.desc = !SORT.desc;
+  else { SORT.key = k; SORT.desc = true; }
+  loadPage({append:false});
+}
+// Refresh the small μ ± σ chip embedded in numeric column headers. Today only
+// the scorer_score column has one; extend by adding more `.col-aggregate`
+// spans to other headers and a `case "<key>"` branch below.
+function updateColAggregates(){
+  for(const span of document.querySelectorAll(".col-aggregate")){
+    const key = span.dataset.colKey;
+    let xs = null;
+    if(key === "score") xs = LOADED_SCORES;
+    if(!xs) { span.textContent = ""; continue; }
+    if(xs.length === 0) { span.textContent = ""; continue; }
+    const mean = xs.reduce((a,b)=>a+b,0) / xs.length;
+    const v = xs.reduce((a,b)=>a+(b-mean)*(b-mean),0) / xs.length;
+    const std = Math.sqrt(v);
+    span.textContent = `μ=${mean.toFixed(2)}±${std.toFixed(2)}, n=${xs.length}`;
+  }
+}
+function resetAndRender(){ loadPage({append:false}); }
+// Legacy alias kept so any straggler `onchange="render()"` attribute still
+// triggers a refetch.
+function render(){ loadPage({append:false}); }
+
+// Split "broad_s01" / "narrow_excerpt_03" / "broad" into base kind + repeat tag.
+// Repeat is whatever follows the broad/narrow stem; bare kind → no repeat.
+function splitKind(k){
+  if(!k) return {base: "-", repeat: ""};
+  const m = /^(broad|narrow)(?:_(.+))?$/.exec(k);
+  if(!m) return {base: k, repeat: ""};
+  return {base: m[1], repeat: m[2] || ""};
+}
+function kindBadge(k){
+  const {base, repeat} = splitKind(k);
+  const cls = (base==="broad")?"ptag-broad":(base==="narrow")?"ptag-narrow":"";
+  const rep = repeat ? ` <span class="ptag" title="verbalization repeat / variant" style="background:#e0e7ff;color:#3730a3;font-size:9px">${esc(repeat)}</span>` : "";
+  return `<span class="ptag ${cls}">${esc(base)}</span>${rep}`;
+}
+function shortHfId(id){
+  if(!id) return "";
+  return id.split("/").pop().split("@")[0];
+}
+// Render one cluster (= one (lora, qa, method, base_kind) row) returned by
+// /api/cells. Per-cluster aggregates (mean score, std, disagreement) are
+// shown inline. Heavy text columns (justification, prediction) are NEVER
+// shipped with the page payload; the user expands a toggle to fetch them
+// from /api/cluster_repeats lazily.
+function repeatTag(rep){
+  if(!rep) return "";
+  return `<span class="ptag" title="verbalization repeat / variant" style="background:#e0e7ff;color:#3730a3;font-size:9px;margin-right:4px">${esc(rep)}</span>`;
+}
+function vbzTrigger(it, kind, label, offset=0){
+  return `<a class="vbz-toggle" href="#" data-lora="${esc(it.lora_id)}" data-qa="${esc(it.qa_id)}" data-method="${esc(it.method)}" data-base="${esc(it.base_kind)}" data-kind="${esc(kind)}" data-n="${it.n_repeats}" data-offset="${offset}" style="display:inline-block;font-size:10px;color:#2563eb">&#9654; ${esc(label)}</a>`;
+}
+async function expandToggle(ev){
+  const a = ev.target.closest(".vbz-toggle");
+  if(!a) return;
+  ev.preventDefault();
+  const host = a.parentElement;
+  const ds = a.dataset;
+  const offset = parseInt(ds.offset || "0");
+  host.innerHTML = '<span style="color:#9ca3af;font-size:10px">loading...</span>';
+  const sp = new URLSearchParams({lora_id: ds.lora, qa_id: ds.qa, method: ds.method, base_kind: ds.base});
+  if(curVersionsAll()) sp.set("versions","all");
+  let j;
+  try {
+    const r = await fetch(withDbAndVersions(`/api/cluster_repeats?${sp.toString()}`));
+    j = await r.json();
+  } catch(e){
+    host.innerHTML = `<span style="color:#b91c1c;font-size:10px">${esc(String(e))}</span>`;
+    return;
+  }
+  if(j.error){
+    host.innerHTML = `<span style="color:#b91c1c;font-size:10px">${esc(j.error)}</span>`;
+    return;
+  }
+  // Render only entries past the preview offset so the inline preview blocks
+  // already in the cell are not duplicated.
+  const reps = (j.repeats || []).slice(offset);
+  host.innerHTML = repeatBlocksFromApi(reps, ds.kind) +
+    `<a class="vbz-collapse" href="#" data-lora="${esc(ds.lora)}" data-qa="${esc(ds.qa)}" data-method="${esc(ds.method)}" data-base="${esc(ds.base)}" data-kind="${esc(ds.kind)}" data-n="${ds.n}" data-offset="${offset}" style="display:inline-block;margin-top:4px;font-size:10px;color:#6b7280">&#9660; collapse</a>`;
+}
+function collapseToggle(ev){
+  const a = ev.target.closest(".vbz-collapse");
+  if(!a) return;
+  ev.preventDefault();
+  const ds = a.dataset;
+  const N = parseInt(ds.n || "0");
+  const offset = parseInt(ds.offset || "0");
+  const moreN = Math.max(0, N - offset);
+  const label = `${moreN} more`;
+  const it = {lora_id: ds.lora, qa_id: ds.qa, method: ds.method, base_kind: ds.base, n_repeats: N};
+  a.parentElement.innerHTML = vbzTrigger(it, ds.kind, label, offset);
+}
+function shortVersion(v){
+  if(!v) return "";
+  // Most method_versions encode their bump as `_v<N>_` somewhere in the string;
+  // pick that out for the short label. Fall back to the last 6 chars so we
+  // always have something monospaced and copy-pasteable.
+  const m = String(v).match(/(?:^|_)v(\d+)(?:_|$)/);
+  if(m) return "v" + m[1];
+  const s = String(v);
+  return s.length > 6 ? s.slice(-6) : s;
+}
+function predIdTag(pid, ver){
+  if(pid === null || pid === undefined) return "";
+  // pred_id uniquely determines (lora_id, qa_id, method, mode, method_version,
+  // sub_prompt_kind) in the DB — the method_version chip is shown alongside so
+  // a copied #pred_id is never ambiguous about which version produced it.
+  const verHtml = ver ? `<span class="ptag" title="method_version=${esc(String(ver))}" style="background:#fef3c7;color:#92400e;font-size:9px;margin-right:4px;font-family:monospace">${esc(shortVersion(ver))}</span>` : "";
+  const pidS = String(pid); const on = isStarred(pidS);
+  const bg = on ? "#fde68a" : "#f3f4f6"; const fg = on ? "#92400e" : "#374151";
+  return `<span class="ptag ptag-star${on?' starred':''}" data-pred-id="${esc(pidS)}" data-bg-default="#f3f4f6" data-fg-default="#374151" title="predictions.pred_id${ver?(' (method_version='+esc(String(ver))+')'):''} — click to ${on?'unstar':'star'}" style="background:${bg};color:${fg};font-size:9px;margin-right:4px;font-family:monospace;cursor:pointer">#${esc(pidS)}</span>${verHtml}`;
+}
+function _renderRepeatRow(r, kind, isFirstInGroup){
+  // One per-repeat block — prefixed with `#<pred_id>` (predictions PK, copy-
+  // pasteable into psql) and the raw sub_prompt_kind. Score/just/pred bodies
+  // are picked by `kind`. The optional dashed separator only fires when this
+  // is not the first row in its group, so elicitation groups stay visually
+  // distinct from internal sample resamples.
+  const idLabel  = (r.pred_id !== undefined && r.pred_id !== null)
+    ? (function(){ const pid = String(r.pred_id); const on = isStarred(pid);
+        const bg = on ? "#fde68a" : "#ecfeff"; const fg = on ? "#92400e" : "#0f766e";
+        return `<span class="ptag-star${on?' starred':''}" data-pred-id="${esc(pid)}" data-bg-default="#ecfeff" data-fg-default="#0f766e" style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:${fg};background:${bg};padding:0 4px;border-radius:2px;margin-right:4px;cursor:pointer" title="predictions.pred_id (click to ${on?'unstar':'star'})">#${esc(pid)}</span>`; })()
+    : "";
+  const skLabel = r.sub_prompt_kind ? `<span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#6b7280;margin-right:6px">${esc(r.sub_prompt_kind)}:</span>` : "";
+  let body;
+  if(kind === "score")     body = fmtScore(r.scorer_score);
+  else if(kind === "just") body = esc(r.scorer_justification || "");
+  else                     body = esc(r.prediction || "");
+  const klass = kind === "just" ? "target" : (kind === "pred" ? "pred-snip" : "");
+  const sep = !isFirstInGroup ? "border-top:1px dashed #e5e7eb;padding:3px 0;margin-top:3px;" : "";
+  return `<div class="${klass}" style="${sep}">${idLabel}${skLabel}${body}</div>`;
+}
+function _elicitationHeader(idx, prompt, kind){
+  // Outer-grouping header for taboo elicitations. The elicitation index is
+  // shown as a teal chip; the elicitation prompt body sits next to it,
+  // truncated by CSS (full text on hover via title=). Score-mode renders a
+  // shorter header so the score chip column stays narrow. The chip alone
+  // appears when prompt text is unavailable (older runs / cache without
+  // source-prompt preservation).
+  const idLbl = idx !== null && idx !== undefined
+    ? `<span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#0f766e;background:#ecfeff;padding:0 4px;border-radius:2px;margin-right:6px">e${String(idx).padStart(3,'0')}</span>`
+    : "";
+  const promptText = prompt || "";
+  if(kind === "score"){
+    return `<div style="margin-top:6px;padding-top:3px;border-top:1px solid #cbd5e1">${idLbl}</div>`;
+  }
+  if(!promptText){
+    return `<div style="margin-top:6px;padding-top:4px;border-top:1px solid #cbd5e1;font-size:10px;color:#9ca3af">${idLbl}<span style="font-style:italic">(prompt text unavailable)</span></div>`;
+  }
+  // Truncate to keep the table cell narrow; full prompt visible via title=.
+  const short = promptText.length > 110 ? promptText.slice(0, 110) + "…" : promptText;
+  return `<div style="margin-top:6px;padding-top:4px;border-top:1px solid #cbd5e1;font-size:10px;color:#374151" title="${esc(promptText)}">${idLbl}<span style="font-style:italic;color:#6b7280">${esc(short)}</span></div>`;
+}
+function repeatBlocksFromApi(reps, kind){
+  // For AO taboo (entries carry elicitation_idx), group repeats by
+  // elicitation_idx and render a sub-header with the elicitation prompt
+  // text. Non-taboo entries (elicitation_idx == null on every row) render
+  // flat as before. Mixed groups can't happen in practice: a single
+  // (lora, qa, method, base_kind) cluster is either AO taboo or not.
+  const hasElicitation = reps.some(r => r.elicitation_idx !== null && r.elicitation_idx !== undefined);
+  if(!hasElicitation){
+    return reps.map((r, i) => _renderRepeatRow(r, kind, i === 0)).join("");
+  }
+  const groups = new Map();
+  for(const r of reps){
+    const k = r.elicitation_idx;
+    if(!groups.has(k)) groups.set(k, {prompt: r.elicitation_prompt || "", rows: []});
+    groups.get(k).rows.push(r);
+  }
+  const out = [];
+  let groupI = 0;
+  for(const [idx, g] of groups){
+    out.push(_elicitationHeader(idx, g.prompt, kind));
+    g.rows.forEach((r, i) => out.push(_renderRepeatRow(r, kind, i === 0)));
+    groupI++;
+  }
+  return out.join("");
+}
+// Compact HF chip rendered next to lora_id (which is encoded as
+// `<org>__<name>@<rev[:8]>` by LoRASpec.lora_id). Decodes back to the HF
+// repo url; rev "latest" or unknown drops the /tree/<rev> suffix.
+function loraHfChip(lora_id){
+  if(!lora_id) return "";
+  const s = String(lora_id);
+  const at = s.indexOf("@");
+  const repoEnc = at >= 0 ? s.slice(0, at) : s;
+  const rev = at >= 0 ? s.slice(at + 1) : "";
+  if(!repoEnc.includes("__")) return "";
+  const repo = repoEnc.replace(/__/g, "/");
+  const href = "https://huggingface.co/" + repo.split("/").map(encodeURIComponent).join("/")
+    + (rev && rev !== "latest" ? "/tree/" + encodeURIComponent(rev) : "");
+  return ` <a class="ckpt" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="open ${esc(repo)} on huggingface.co" style="margin-left:4px;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#0369a1;text-decoration:none" onclick="event.stopPropagation()">↗hf</a>`;
+}
+// Compact `@<basename>` chip rendered next to the method, sourced from
+// method_runs.hf_checkpoint (joined server-side). The full id is in `title`.
+// Linked to huggingface.co/<org>/<name> when the checkpoint id has the
+// expected `org/name[@rev]` shape; otherwise renders as a plain span.
+function ckptChip(it){
+  if(!it.hf_checkpoint) return "";
+  const full = String(it.hf_checkpoint);
+  const [repo, rev] = full.split("@");
+  const short = repo.split("/").pop();
+  const style = "margin-left:4px;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#0369a1";
+  const title = `method_runs.hf_checkpoint=${esc(full)}`;
+  if(repo.includes("/")){
+    const href = "https://huggingface.co/" + repo.split("/").map(encodeURIComponent).join("/") + (rev ? "/tree/" + encodeURIComponent(rev) : "");
+    return ` <a class="ckpt" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${title}" style="${style};text-decoration:none" onclick="event.stopPropagation()">@${esc(short)}</a>`;
+  }
+  return ` <span class="ckpt" title="${title}" style="${style}">@${esc(short)}</span>`;
+}
+// Hover tooltip for the method_version cell — projects the method_runs row
+// onto a one-per-line summary so the user sees what each token in the
+// version string decodes to.
+function versionTooltip(it){
+  const parts = [it.method_version || "(no version)"];
+  const decode = [];
+  if(it.is_agent_run) decode.push("agent_run");
+  if(it.config_hash !== undefined && it.config_hash !== null) decode.push("config_hash="+it.config_hash);
+  if(it.schema_version !== undefined && it.schema_version !== null) decode.push("schema_version="+it.schema_version);
+  if(it.ao_mode) decode.push("ao_mode="+it.ao_mode);
+  if(it.profile) decode.push("profile="+it.profile);
+  if(it.n_value !== undefined && it.n_value !== null) decode.push("n_value="+it.n_value);
+  if(it.k_value !== undefined && it.k_value !== null) decode.push("k_value="+it.k_value);
+  if(it.r_value !== undefined && it.r_value !== null) decode.push("r_value="+it.r_value);
+  if(it.t_value !== undefined && it.t_value !== null) decode.push("t_value="+it.t_value);
+  if(it.seed_value !== undefined && it.seed_value !== null) decode.push("seed_value="+it.seed_value);
+  if(it.variants && it.variants.length) decode.push("variants=["+it.variants.join(", ")+"]");
+  if(it.hf_checkpoint) decode.push("hf_checkpoint="+it.hf_checkpoint);
+  if(decode.length) parts.push("", "decoded via method_runs:", ...decode.map(x => "  "+x));
+  return parts.join("\n");
+}
+function clusterRowHtml(it){
+  const N = it.n_repeats;
+  // Aggregate score: mean ± std over the cluster's repeats. Color tier is
+  // documented in the legend; the raw mean/std values are exactly what the
+  // SQL aggregation returns. When the cluster has multiple repeats, list each
+  // one's raw scorer_score below the aggregate.
+  let aggHtml = "&mdash;";
+  if(it.mean_score !== null && it.mean_score !== undefined){
+    aggHtml = fmtScore(it.mean_score) +
+      ` <span style="font-size:10px;color:#6b7280">&plusmn;${(+(it.std_score||0)).toFixed(2)}</span>`;
+  }
+  // method Δ — server-computed max-min of per-method mean scorer_score within
+  // the (lora, qa) cell. Color tier is documented in the legend.
+  let disagreeHtml = '<span style="color:#d1d5db">&mdash;</span>';
+  if(it.disagree !== null && it.disagree !== undefined){
+    const d = it.disagree;
+    const dcls = d < 0.2 ? "score-low" : (d < 0.5 ? "score-mid" : "score-high");
+    const tip = Object.entries(it.method_means || {}).sort((a,b) => b[1]-a[1])
+      .map(([k,v]) => `${esc(k)}: ${(+v).toFixed(2)}`).join(" | ");
+    disagreeHtml = `<span class="score ${dcls}" title="${esc(tip)}">${d.toFixed(2)}</span>`;
+  }
+  // Inline preview of up to 2 repeats per cluster; "show N more" toggle
+  // fetches the rest via /api/cluster_repeats.
+  const preview = it.small_repeats || [];
+  const previewN = preview.length;
+  const moreN = Math.max(0, N - previewN);
+  // The expansion handler slices `repeats[offset:]`. Pass previewN so the
+  // expanded block renders only the *unseen* tail; otherwise the first
+  // previewN repeats appear twice (once inline, once after expansion).
+  const moreLink = (kind) => moreN > 0
+    ? `<div style="margin-top:4px">${vbzTrigger(it, kind, `show ${moreN} more`, previewN)}</div>` : "";
+  const justCellInner = repeatBlocksFromApi(preview, "just") + moreLink("just");
+  const predCellInner = repeatBlocksFromApi(preview, "pred") + moreLink("pred");
+  const scoreCellInner = aggHtml + (previewN > 1
+    ? `<div style="margin-top:4px;font-size:10px;color:#9ca3af">${repeatBlocksFromApi(preview, "score")}</div>` : ""
+  ) + (moreN > 0
+    ? `<div style="margin-top:4px">${vbzTrigger(it, "score", `show ${moreN} more`, previewN)}</div>` : ""
+  );
+  // Columns now show raw DB values: no TASK_DISPLAY rename, no methodLabel
+  // rewrite or color chip, no finetune chip, no #pred_id chip on repeats. The
+  // legend at the top of the page documents the few decorations that remain
+  // (score color tier, "mean ± std" notation, "method Δ", "meta haiku").
+  return `
+    <tr>
+      <td data-col="task">${esc(it.task || '')}</td>
+      <td data-col="lora"><a class="lora-link" href="${withDb('/cell/'+encodeURIComponent(it.lora_id)+'/'+encodeURIComponent(it.qa_id))}" title="${esc(it.lora_id)}" style="word-break:break-all">${esc(it.lora_id)}</a>${loraHfChip(it.lora_id)}</td>
+      <td data-col="finetune">${esc(it.finetune||'')}</td>
+      <td data-col="method">${esc(it.method)}${ckptChip(it)}</td>
+      <td data-col="version" title="${esc(versionTooltip(it))}" style="font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#475569;word-break:break-all">${esc(it.method_version || '')}</td>
+      <td data-col="kind">${esc(it.base_kind || '')}<div style="font-size:10px;color:#6b7280;margin-top:2px">${N} repeat${N===1?"":"s"}</div></td>
+      <td data-col="score">${scoreCellInner}</td>
+      <td data-col="disagree">${disagreeHtml}</td>
+      <td data-col="meta"><span class="meta-cell" data-lora="${esc(it.lora_id)}" data-qa="${esc(it.qa_id)}" data-method="${esc(it.method)}" data-base="${esc(it.base_kind)}"><span style="color:#d1d5db;font-size:11px">…</span></span></td>
+      <td data-col="question" class="target" title="${esc((it.prompt || it.question) + (it.prompt && it.question && it.prompt !== it.question ? ('\\n\\nbase qa: ' + it.question) : ''))}" style="color:#1f2937">${esc(it.prompt || it.question)}</td>
+      <td data-col="just" class="target">${justCellInner}</td>
+      <td data-col="target" class="target" title="${esc(it.target_response)}">${esc(it.target_response)}</td>
+      <td data-col="pred">${predCellInner}</td>
+    </tr>
+  `;
+}
+
+
+load();
+</script></body></html>

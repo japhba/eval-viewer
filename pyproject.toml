@@ -1,0 +1,20 @@
+[project]
+name = "eval-viewer"
+version = "0.1.0"
+description = "Unified web viewer for method_bench (loracles) and Activation Oracle eval results in Postgres"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+    "psycopg[binary]>=3.2",
+    "anthropic>=0.18",
+]
+
+[project.scripts]
+eval-viewer = "eval_viewer.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eval_viewer"]

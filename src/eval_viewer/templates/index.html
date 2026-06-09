@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>method_bench viewer</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #fafafa; color: #222; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0f1115; color: #e5e7eb; }
+    header { background: #111827 !important; }
+    main { color: #e5e7eb; }
+    table { background: #1a1d23 !important; border-color: #2a2f37 !important; }
+    th { background: #20242c !important; color: #cbd5e1 !important; border-color: #2a2f37 !important; }
+    td { border-color: #2a2f37 !important; color: #e5e7eb; }
+    /* The light-mode `tr:hover > td` selector below has higher specificity
+       than `tr:hover`, so painting just the row in dark mode would lose to
+       the light pale-gray td rule. Apply the dark hover background to the
+       td directly so it actually wins. */
+    tr:hover, tr:hover > td { background: #20242c !important; }
+    h2 { color: #94a3b8 !important; }
+    h3 { color: #cbd5e1 !important; }
+    .filters, .qa-box, .pred-card, .judge-box { background: #1a1d23 !important; border-color: #2a2f37 !important; color: #e5e7eb !important; }
+    .filters label, .col-toggles label { color: #cbd5e1 !important; }
+    .filters select, .filters input[type=text] { background: #0f1115 !important; color: #e5e7eb !important; border-color: #374151 !important; }
+    .pred-header { background: #20242c !important; border-color: #2a2f37 !important; color: #e5e7eb !important; }
+    .pred-meta, .pred-snip, .target { color: #cbd5e1 !important; }
+    .pred-body { color: #e5e7eb !important; }
+    .qa-box .target { background: #14302a !important; border-left-color: #10b981 !important; color: #d1fae5 !important; }
+    .pblock { background: #181b21 !important; border-color: #2a2f37 !important; }
+    .pblock-head { background: #20242c !important; border-color: #2a2f37 !important; }
+    .pblock-inline { background: #1a1d23 !important; color: #e5e7eb !important; border-color: #2a2f37 !important; }
+    .pblock-body { background: #15181d !important; color: #cbd5e1 !important; }
+    .scorer-box { background: #2a2113 !important; border-color: #92400e !important; color: #fde68a !important; }
+    .scorer-box .label { color: #fbbf24 !important; }
+    .lora-link { color: #60a5fa !important; }
+    .ptag { background: #2a2f37 !important; color: #e5e7eb !important; }
+    .ptag-broad { background: #1e3a8a !important; color: #dbeafe !important; }
+    .ptag-narrow { background: #78350f !important; color: #fef3c7 !important; }
+    .score-low  { color: #f87171 !important; }
+    .score-mid  { color: #fbbf24 !important; }
+    .score-high { color: #4ade80 !important; }
+    .uplift-pos { color: #4ade80 !important; }
+    .uplift-neg { color: #f87171 !important; }
+    .curve .seg { background: #20242c !important; color: #cbd5e1 !important; }
+    .ckpt { color: #94a3b8 !important; }
+    .pwarn { background: #3b1416 !important; color: #fca5a5 !important; border-color: #7f1d1d !important; }
+  }
+  header { background: #1f2937; color: white; padding: 14px 24px; display: flex; gap: 24px; align-items: center; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header nav a { color: #cbd5e1; text-decoration: none; margin-right: 16px; font-size: 14px; }
+  header nav a:hover { color: white; }
+  main { padding: 20px 24px; width: 100%; box-sizing: border-box; }
+  h2 { font-size: 14px; text-transform: uppercase; color: #6b7280; letter-spacing: 0.05em; margin-top: 28px; }
+  table { border-collapse: collapse; background: white; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+  td { word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+  th { background: #f9fafb; font-weight: 600; color: #374151; font-size: 12px; position: relative; user-select: none; }
+  table { table-layout: fixed; width: 100%; }
+  .col-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
+  .col-resizer:hover, .col-resizer.dragging { background: #93c5fd; }
+  tr:hover { background: #f9fafb; }
+  .task { font-weight: 600; color: #111827; }
+  .method { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; color: white; }
+  .curve { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; color: #4b5563; }
+  .curve .seg { padding: 1px 4px; border-radius: 3px; background: #f3f4f6; margin-right: 2px; }
+  .uplift-pos { color: #16a34a; }
+  .uplift-neg { color: #dc2626; }
+  .score { font-family: ui-monospace, monospace; font-weight: 600; }
+  .score-low { color: #dc2626; }
+  .score-mid { color: #d97706; }
+  .score-high { color: #16a34a; }
+  #loading { color: #9ca3af; font-style: italic; }
+</style></head>
+<body>
+<header><h1>method_bench viewer</h1>
+  <nav><a href="/" id="nav-ov">Overview</a><a href="/predictions" id="nav-pr">Predictions</a><a href="/agents" id="nav-ag">Agent runs</a><a href="/ao/" id="nav-ao">AO runs</a>{DOCENT_NAV_LINK}</nav>
+  <label style="color:#cbd5e1;font-size:13px">DB
+    <select id="db-select" style="margin-left:6px;font-size:13px;padding:3px 6px;border:1px solid #334155;background:#0f172a;color:#cbd5e1;border-radius:3px"></select>
+  </label>
+  <label style="color:#cbd5e1;font-size:13px" title="scorer paradigm — controls which scores feed the aggregates (cell page always shows all)">Scorer
+    <select id="paradigm-select" style="margin-left:6px;font-size:13px;padding:3px 6px;border:1px solid #334155;background:#0f172a;color:#cbd5e1;border-radius:3px"></select>
+  </label>
+  <span id="version-badge" style="font-size:11px;font-weight:600;letter-spacing:0.03em;padding:3px 10px;border-radius:3px;cursor:pointer" title="click to toggle latest-only / show-all"></span>
+  <span style="margin-left:auto;color:#9ca3af;font-size:12px" id="db-info"></span>
+</header>
+<main>
+  <h2>Task × Method matrix (scorer-mean)</h2>
+  <div id="matrix-wrap"><div id="loading">loading…</div></div>
+
+  <h2>Per-cell sample-size curves (AO sweeps)</h2>
+  <div id="curves-wrap"><div id="loading">loading…</div></div>
+</main>
+<script>
+const METHOD_COLOR = {loracle:"#9467bd", ia:"#2ca02c", ao:"#ff7f0e", "ia:agent":"#16a34a", "ao:agent":"#fb923c", "loracle:agent":"#a855f7"};
+const METHOD_DISPLAY = {loracle:"LoRAcle", ia:"IA", ao:"AO", "ia:agent":"IA+Agent", "ao:agent":"AO+Agent", "loracle:agent":"LoRAcle+Agent"};
+const TASK_DISPLAY = {taboo:"Taboo", sl:"Subliminal", em:"Emergent Misalignment", hf:"HuggingFace", ti:"Trigger Injection"};
+const TASK_ORDER = ["taboo","sl","em","hf","ti"];
+
+function colorFor(method){ return METHOD_COLOR[method] || "#6b7280"; }
+function methodLabel(m){ return METHOD_DISPLAY[m] || m.toUpperCase(); }
+function taskLabel(t){ return TASK_DISPLAY[t] || t; }
+function fmtScore(s){ if(s===null) return "—"; const cls = s<0.2?"score-low":(s<0.6?"score-mid":"score-high"); return `<span class="score ${cls}">${s.toFixed(2)}</span>`; }
+function esc(s){ return (s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+function enableColResize(){
+  for(const r of document.querySelectorAll(".col-resizer")){
+    r.onmousedown = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const th = r.parentElement;
+      // Find matching <col> in the table's <colgroup> so the new width
+      // actually drives layout (table-layout: fixed honors col widths).
+      const tr = th.parentElement;
+      const idx = Array.from(tr.children).indexOf(th);
+      const cg = tr.closest("table").querySelector("colgroup");
+      const col = cg ? cg.children[idx] : null;
+      const startX = e.clientX, startW = th.getBoundingClientRect().width;
+      r.classList.add("dragging"); document.body.style.cursor = "col-resize";
+      const move = (ev) => {
+        const w = Math.max(40, startW + (ev.clientX - startX));
+        th.style.width = w + "px";
+        if(col) col.style.width = w + "px";
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        r.classList.remove("dragging"); document.body.style.cursor = "";
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    };
+  }
+}
+function curDb(){ return new URL(location.href).searchParams.get("db") || ""; }
+function withDb(url){ const db = curDb(); if(!db) return url; return url + (url.includes("?")?"&":"?") + "db=" + encodeURIComponent(db); }
+function curVersionsAll(){ return (new URL(location.href).searchParams.get("versions") || "").toLowerCase() === "all"; }
+function curPickParams(){
+  return new URL(location.href).searchParams.getAll("pick");
+}
+function curScorerId(){ return new URL(location.href).searchParams.get("scorer_id") || ""; }
+async function setupParadigmSelector(){
+  const sel = document.getElementById("paradigm-select"); if(!sel) return;
+  const r = await fetch("/api/scorer_paradigms");
+  const list = await r.json();
+  const cur = curScorerId();
+  // When no scorer_id is in the URL, the backend defaults to scorer.txt —
+  // visually pre-select that option so the dropdown reflects actual state.
+  const isDefault = (p) => (p.template_path || "").endsWith("scorer.txt");
+  sel.innerHTML = list.map(p => {
+    const selAttr = cur ? (String(p.scorer_id)===cur ? "selected" : "")
+                        : (isDefault(p) ? "selected" : "");
+    return `<option value="${p.scorer_id}" ${selAttr}>${p.label} (${p.n_scores})</option>`;
+  }).join("");
+  sel.addEventListener("change", () => {
+    const u = new URL(location.href); u.searchParams.set("scorer_id", sel.value); location.href = u.toString();
+  });
+}
+function withDbAndVersions(url){
+  let u = withDb(url);
+  if(curVersionsAll()){ u += (u.includes("?")?"&":"?") + "versions=all"; }
+  for(const p of curPickParams()){
+    u += (u.includes("?")?"&":"?") + "pick=" + encodeURIComponent(p);
+  }
+  const sid = curScorerId();
+  if(sid){ u += (u.includes("?")?"&":"?") + "scorer_id=" + encodeURIComponent(sid); }
+  return u;
+}
+function _vbFmtTs(ts){
+  if(!ts) return "—";
+  return new Date(ts*1000).toISOString().slice(0,16).replace("T"," ");
+}
+async function setupVersionBadge(){
+  const r = await fetch(withDbAndVersions("/api/version_status"));
+  const j = await r.json();
+  const b = document.getElementById("version-badge");
+  if(!b) return;
+  const showAll = !j.latest_only;
+  const nDropped = (j.dropped || []).reduce((a,d) => a + d.dropped.length, 0);
+  const nOverride = (j.picks || []).length;
+  if(showAll){
+    b.style.background = "#fef9c3"; b.style.color = "#713f12"; b.style.border = "1px solid #fde68a";
+    b.textContent = "showing ALL versions";
+  } else if(nOverride){
+    b.style.background = "#fde68a"; b.style.color = "#92400e"; b.style.border = "1px solid #fbbf24";
+    b.textContent = `manual: ${nOverride} overridden`;
+  } else {
+    b.style.background = nDropped ? "#dbeafe" : "#e5e7eb";
+    b.style.color = "#1e3a8a"; b.style.border = "1px solid #93c5fd";
+    b.textContent = `latest only (${nDropped} hidden)`;
+  }
+  b.title = "Click to pick versions per method.";
+
+  const groups = j.groups || [];
+  const reasonNote = (j.dropped || []).some(d => d.reason === "recency")
+    ? "Some methods auto-picked by created_at recency (no _v<N>_ marker)." : "";
+
+  const panel = document.createElement("div");
+  panel.id = "version-panel";
+  panel.style.cssText = "display:none;position:fixed;background:white;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:11px;color:#1f2937;box-shadow:0 4px 12px rgba(0,0,0,.08);z-index:1000;min-width:480px;max-height:70vh;overflow:auto";
+
+  const url = new URL(location.href);
+  const curPicks = {};
+  for(const p of url.searchParams.getAll("pick")){
+    const parts = p.split(":");
+    if(parts.length === 3) curPicks[parts[0]+":"+parts[1]] = parts[2];
+  }
+  let html = "";
+  if(groups.length === 0){
+    html += "<div style='color:#6b7280'>Only one version per method — nothing to pick.</div>";
+  } else {
+    html += "<div style='font-weight:600;margin-bottom:6px'>Pick a method_version per method</div>";
+    if(reasonNote){
+      html += `<div style="color:#92400e;background:#fef3c7;padding:4px 6px;border-radius:4px;margin-bottom:6px;font-size:10px">${esc(reasonNote)}</div>`;
+    }
+    html += "<table style='border-collapse:collapse;width:100%'>";
+    for(const g of groups){
+      const key = g.method + ":" + g.mode;
+      const cur = curPicks[key] || g.kept || (g.versions[0] && g.versions[0].version);
+      const opts = (g.versions || []).map(v => {
+        const label = `${v.version} · ${v.n} preds · ${_vbFmtTs(v.ts)}`;
+        return `<option value="${esc(v.version)}" ${v.version===cur?"selected":""}>${esc(label)}</option>`;
+      }).join("");
+      const reasonChip = g.reason === "override" ? '<span style="color:#92400e;font-size:9px;margin-left:4px">manual</span>'
+                       : g.reason === "recency" ? '<span style="color:#6b7280;font-size:9px;margin-left:4px">by recency</span>'
+                       : g.reason === "regex" ? '<span style="color:#6b7280;font-size:9px;margin-left:4px">by v-marker</span>'
+                       : '';
+      html += `<tr>
+        <td style="padding:3px 6px 3px 0;font-weight:500;white-space:nowrap;vertical-align:top">${esc(g.method)}${g.mode!=='direct'?'/'+esc(g.mode):''}${reasonChip}</td>
+        <td style="padding:3px 0"><select data-method="${esc(g.method)}" data-mode="${esc(g.mode)}" style="font-size:11px;width:100%">${opts}</select></td>
+      </tr>`;
+    }
+    html += "</table>";
+    html += `<div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center">
+      <label style="cursor:pointer"><input type="checkbox" id="vp-all" ${showAll?"checked":""}> show all versions (no filter)</label>
+      <span><button id="vp-reset" style="font-size:11px;margin-right:6px">reset to auto</button>
+            <button id="vp-apply" style="font-size:11px;font-weight:600;background:#2563eb;color:white;border:0;padding:4px 10px;border-radius:4px;cursor:pointer">apply</button></span></div>`;
+  }
+  panel.innerHTML = html;
+  document.body.appendChild(panel);
+
+  function placePanel(){
+    const r2 = b.getBoundingClientRect();
+    panel.style.left = Math.max(8, r2.left) + "px";
+    panel.style.top = (r2.bottom + 4) + "px";
+  }
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if(panel.style.display === "none"){ placePanel(); panel.style.display = "block"; }
+    else { panel.style.display = "none"; }
+  };
+  document.addEventListener("click", (e) => {
+    if(panel.style.display !== "none" && !panel.contains(e.target) && e.target !== b){
+      panel.style.display = "none";
+    }
+  });
+
+  const apply = panel.querySelector("#vp-apply");
+  if(apply){
+    apply.onclick = () => {
+      const u = new URL(location.href);
+      u.searchParams.delete("versions");
+      u.searchParams.delete("pick");
+      if(panel.querySelector("#vp-all").checked){
+        u.searchParams.set("versions","all");
+      } else {
+        for(const sel of panel.querySelectorAll("select[data-method]")){
+          u.searchParams.append("pick", `${sel.dataset.method}:${sel.dataset.mode}:${sel.value}`);
+        }
+      }
+      location.href = u.toString();
+    };
+  }
+  const reset = panel.querySelector("#vp-reset");
+  if(reset){
+    reset.onclick = () => {
+      const u = new URL(location.href);
+      u.searchParams.delete("versions");
+      u.searchParams.delete("pick");
+      location.href = u.toString();
+    };
+  }
+
+  // Propagate version controls into nav links so switching pages preserves the
+  // user's pick set.
+  for(const a of document.querySelectorAll("header nav a")){
+    let h = a.getAttribute("href");
+    if(showAll && !h.includes("versions=")){
+      h += (h.includes("?")?"&":"?") + "versions=all";
+    }
+    for(const p of curPickParams()){
+      h += (h.includes("?")?"&":"?") + "pick=" + encodeURIComponent(p);
+    }
+    a.setAttribute("href", h);
+  }
+}
+async function setupDbSelector(){
+  const r = await fetch("/api/dbs"); const j = await r.json();
+  const sel = document.getElementById("db-select"); if(!sel) return;
+  sel.innerHTML = j.dbs.map(d => `<option value="${d}" ${d===j.selected?"selected":""}>${d}</option>`).join("");
+  sel.addEventListener("change", () => {
+    const u = new URL(location.href); u.searchParams.set("db", sel.value); location.href = u.toString();
+  });
+  // make nav links carry the current db
+  for(const a of document.querySelectorAll("header nav a")){ a.href = withDbAndVersions(a.getAttribute("href")); }
+  await setupVersionBadge();
+}
+
+async function load(){
+  await setupDbSelector();
+  await setupParadigmSelector();
+  const r = await fetch(withDbAndVersions("/api/summary"));
+  const j = await r.json();
+  renderMatrix(j);
+  renderCurves(j);
+}
+
+function renderCurves(j){
+  const sweeps = j.summary.filter(c => c.curve.length > 1);
+  if(sweeps.length === 0){ document.getElementById("curves-wrap").innerHTML = "<p style='color:#9ca3af'>No sweep data (single-version cells only).</p>"; return; }
+  let h = `<table><colgroup>
+    <col style="width:180px"><col style="width:120px"><col><col style="width:90px"><col style="width:60px">
+  </colgroup><thead><tr>
+    <th>Task<div class='col-resizer'></div></th>
+    <th>Method<div class='col-resizer'></div></th>
+    <th>Sweep curve<div class='col-resizer'></div></th>
+    <th>Δ x1→max<div class='col-resizer'></div></th>
+    <th>predictions<div class='col-resizer'></div></th>
+  </tr></thead><tbody>`;
+  for(const c of sweeps){
+    let curve = c.curve.map(p => `<span class="seg">x${p.n}=${p.mean.toFixed(2)}</span>`).join("→");
+    let delta = c.best_mean - c.x1_mean;
+    let deltaCls = delta > 0.01 ? "uplift-pos" : (delta < -0.01 ? "uplift-neg" : "");
+    let deltaStr = delta > 0 ? `+${delta.toFixed(2)}` : delta.toFixed(2);
+    h += `<tr><td class="task">${taskLabel(c.task)}</td>`;
+    h += `<td><span class="method" style="background:${colorFor(c.method)}">${methodLabel(c.method)}</span></td>`;
+    h += `<td class="curve">${curve}</td>`;
+    h += `<td class="curve"><span class="${deltaCls}">${deltaStr}</span></td>`;
+    h += `<td style="color:#9ca3af">${c.n_predictions}</td></tr>`;
+  }
+  h += "</tbody></table>";
+  document.getElementById("curves-wrap").innerHTML = h;
+  enableColResize();
+}
+
+function renderMatrix(j){
+  const tasks = TASK_ORDER.filter(t => j.tasks.includes(t)).concat(j.tasks.filter(t => !TASK_ORDER.includes(t)));
+  const methods = j.methods;
+  const byKey = {};
+  for(const c of j.summary){ byKey[c.task+"|"+c.method] = c; }
+  // Determine sweep sizes per method (union across tasks).
+  // Methods without sweep get a single null sub-column.
+  const sizesByMethod = {};
+  for(const m of methods){
+    const sizes = new Set();
+    let anyUnsized = false;
+    for(const t of tasks){
+      const c = byKey[t+"|"+m];
+      if(!c) continue;
+      for(const p of c.curve){ if(p.n!==null) sizes.add(p.n); else anyUnsized = true; }
+    }
+    const sized = [...sizes].sort((a,b)=>a-b);
+    sizesByMethod[m] = sized.length === 0 ? [null] : (anyUnsized ? [null, ...sized] : sized);
+  }
+  // colgroup: Task col fixed at 180px; remaining sub-cells share the rest equally.
+  const totalSub = methods.reduce((a,m) => a + sizesByMethod[m].length, 0);
+  let h = `<table><colgroup><col style="width:180px">`;
+  for(let i=0;i<totalSub;i++) h += `<col>`;
+  h += `</colgroup><thead><tr><th rowspan='2'>Task<div class='col-resizer'></div></th>`;
+  for(const m of methods){ h += `<th colspan='${sizesByMethod[m].length}' style='text-align:center'><span class="method" style="background:${colorFor(m)}">${methodLabel(m)}</span></th>`; }
+  h += "</tr><tr>";
+  for(const m of methods){ for(const n of sizesByMethod[m]){ h += `<th style='font-weight:500;color:#6b7280' title='samples used to compute method state'>${n===null?'—':'samples='+n}<div class='col-resizer'></div></th>`; } }
+  h += "</tr></thead><tbody>";
+  for(const t of tasks){
+    h += `<tr><td class="task">${taskLabel(t)}</td>`;
+    for(const m of methods){
+      const c = byKey[t+"|"+m];
+      for(const n of sizesByMethod[m]){
+        if(!c){ h += `<td style="color:#d1d5db">—</td>`; continue; }
+        const pt = c.curve.find(p => p.n === n);
+        if(!pt){ h += `<td style="color:#d1d5db">—</td>`; continue; }
+        h += `<td>${fmtScore(pt.mean)}<span style="color:#9ca3af;font-size:11px"> ·${pt.n_scores}</span></td>`;
+      }
+    }
+    h += "</tr>";
+  }
+  h += "</tbody></table>";
+  document.getElementById("matrix-wrap").innerHTML = h;
+  enableColResize();
+}
+
+load();
+</script></body></html>
