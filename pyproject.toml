@@ -2,7 +2,7 @@
 name = "eval-viewer"
 version = "0.1.0"
 description = "Unified web viewer for method_bench (loracles) and Activation Oracle eval results in Postgres"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "flask>=3.0",
     "psycopg[binary]>=3.2",
