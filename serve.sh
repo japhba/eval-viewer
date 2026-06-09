@@ -6,7 +6,13 @@
 #   setsid nohup ./serve.sh &
 #
 cd "$(dirname "$0")"
-set -a; source .env; set +a   # ANTHROPIC_API_KEY, DOCENT_*, METHOD_BENCH_DB_URL, EVAL_VIEWER_TOKEN
+# loracles .env: ANTHROPIC_API_KEY, DOCENT_*, METHOD_BENCH_DB_URL.
+# local .env (gitignored, plain KEY=VALUE so Flask's dotenv autoload can
+# parse it too): EVAL_VIEWER_TOKEN, AO_EVAL_DB_URL.
+set -a
+source /workspace-vast/jbauer/loracles-worktrees/evals_jan/.env
+source .env
+set +a
 mkdir -p logs
 exec /var/tmp/jbauer/venvs/evals_jan/bin/eval-viewer \
   --port 8096 \
