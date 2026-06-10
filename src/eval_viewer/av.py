@@ -8,10 +8,11 @@ import json
 import re
 from pathlib import Path
 
+import httpx
 from flask import Blueprint, abort, jsonify, request, send_from_directory
 
 from . import config
-from .common import Conn, _e, _fmt_num, _fmt_ts, _qs, extract_json, haiku_call
+from .common import Conn, _e, _fmt_num, _fmt_ts, _qs, extract_json
 
 av = Blueprint("av", __name__, url_prefix="/av")
 
@@ -542,14 +543,107 @@ _CLUSTER_SYSTEM = (
     "You score a CLUSTER of verbalizations from an activation-verbalizer "
     "eval: one method's answer(s) to one question, possibly sampled several "
     "times. Given the QUESTION, the CORRECT_RESPONSE, and the rollouts (each "
-    "with its primary judge score, 1=worst..5=best), respond with JSON: "
-    '{"cluster_score": <1-5 int>, "digest": "- ...\\n- ..."} where '
-    "cluster_score judges how well the cluster AS A WHOLE captures "
-    "CORRECT_RESPONSE (consistency across rollouts counts; confident "
-    "hallucinations disqualify) and digest is 2-4 terse markdown bullets, "
-    "each <=12 words, summarizing what the method conveyed and the most "
-    "informative failure mode if any."
+    "with its primary judge score in [0,1]), respond with JSON: "
+    '{"trueness": <0.0-1.0>, "precision": <0.0-1.0>, "digest": "- ...\\n- ..."} '
+    "(0.1 granularity). trueness judges how well the cluster AS A WHOLE "
+    "captures CORRECT_RESPONSE (consistency across rollouts counts); "
+    "precision judges concreteness and absence of fabricated specifics "
+    "(confident hallucinations disqualify). digest is 2-4 terse markdown "
+    "bullets, each <=12 words, summarizing what the method conveyed and the "
+    "most informative failure mode if any."
 )
+
+# Self-hosted cluster scorer — free and concurrency-safe, so cluster cards
+# are computed AT RENDER TIME for every (method, item) block instead of
+# on-demand per click. Endpoint fallback chain: the Node-V tunnel (rotates
+# with the pod) first, then the node-local vLLM on :18002. The live choice
+# is probed once and cached; a failed call re-probes on the next page load.
+_SELFJUDGE_ENDPOINTS = [
+    ("http://127.0.0.1:18001", "sk-nodeV-judge", "Qwen/Qwen3.6-35B-A3B-FP8"),
+    ("http://127.0.0.1:18002", "", "Qwen/Qwen3.6-27B-FP8"),
+]
+_SELFJUDGE_LIVE: list | None = None  # [url, key, model] once probed
+
+
+def _judge_endpoint() -> tuple[str, str, str] | None:
+    global _SELFJUDGE_LIVE
+    if _SELFJUDGE_LIVE is not None:
+        return tuple(_SELFJUDGE_LIVE)
+    for url, key, model in _SELFJUDGE_ENDPOINTS:
+        try:
+            r = httpx.get(f"{url}/v1/models", timeout=4.0,
+                          headers={"Authorization": f"Bearer {key}"} if key else {})
+            if r.status_code == 200 and model in r.text:
+                _SELFJUDGE_LIVE = [url, key, model]
+                return url, key, model
+        except Exception:
+            continue
+    return None
+
+
+def _cluster_score_cached(key: tuple, vp: str, correct: str,
+                          rollouts: list[dict]) -> dict:
+    """Score one method's rollout cluster on one item via the self-hosted
+    judge. Successes are cached in-process (viewer restart clears); failures
+    are returned but NOT cached so a bounced tunnel heals on reload."""
+    if key in _CLUSTER_SCORE_CACHE:
+        return _CLUSTER_SCORE_CACHE[key]
+    ep = _judge_endpoint()
+    if ep is None:
+        return {"error": "no self-hosted judge reachable (tunnel :18001 / local :18002)"}
+    url, jkey, model = ep
+    parts = [f"QUESTION:\n{(vp or '')[:4000]}\n\n"
+             f"CORRECT_RESPONSE:\n{(correct or '')[:4000]}\n"]
+    for i, r in enumerate(rollouts[:30]):
+        n = _norm01(r["score"], r["score_kind"])
+        sc = "-" if n is None else f"{n:.1f}"
+        parts.append(f"\n[rollout {i + 1}, judge={sc}] {(r['generation'] or '')[:4000]}")
+    if len(rollouts) > 30:
+        parts.append(f"\n...(+{len(rollouts) - 30} more rollouts omitted)...")
+    body = {"model": model,
+            "messages": [{"role": "system", "content": _CLUSTER_SYSTEM},
+                         {"role": "user", "content": "".join(parts)}],
+            "max_tokens": 220, "temperature": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False}}
+    try:
+        r = httpx.post(f"{url}/v1/chat/completions",
+                       headers={"Authorization": f"Bearer {jkey}"} if jkey else {},
+                       json=body, timeout=60.0)
+        r.raise_for_status()
+        text = r.json()["choices"][0]["message"]["content"]
+    except Exception as exc:
+        global _SELFJUDGE_LIVE
+        _SELFJUDGE_LIVE = None  # re-probe on the next call
+        return {"error": str(exc)}
+    obj = extract_json(text) or {}
+    def _01(v):
+        return float(v) if isinstance(v, (int, float)) and 0.0 <= v <= 1.0 else None
+    out = {"trueness": _01(obj.get("trueness")),
+           "precision": _01(obj.get("precision")),
+           "digest": str(obj.get("digest") or text.strip()),
+           "n_rollouts": len(rollouts), "judge_model": model}
+    _CLUSTER_SCORE_CACHE[key] = out
+    return out
+
+
+def _cluster_card(res: dict | None) -> str:
+    """Render a cluster-score result as the inline meta-card."""
+    if res is None:
+        return ""
+    if res.get("error"):
+        return (f'<div class="meta-out"><span class="muted">cluster scorer '
+                f'offline ({_e(str(res["error"])[:80])})</span></div>')
+    t = res.get("trueness")
+    cls = ("" if t is None else
+           "score-1" if t <= 0.4 else "score-3" if t < 0.8 else "score-5")
+    tp = " &middot; ".join(x for x in (
+        f"T {t:.1f}" if t is not None else None,
+        f"P {res['precision']:.1f}" if res.get("precision") is not None else None,
+    ) if x)
+    digest = _e(res.get("digest") or "").replace("\n", "<br>")
+    return (f'<div class="meta-out"><div class="meta-card {cls}">'
+            f'<strong>{tp or "?"}</strong>'
+            f'<div class="meta-just">{digest}</div></div></div>')
 
 
 def _item_fields(rows: list[dict]) -> tuple[str, str, str]:
@@ -881,6 +975,24 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                'per method (normalized 0-1, amber tick = mean):</span> '
                + " ".join(strip) + "</div>") if strip else ""
 
+    # Cluster cards render by default: precompute every (method, item) block
+    # concurrently (self-hosted judge — concurrency is fine; in-process cache
+    # makes reloads free).
+    from concurrent.futures import ThreadPoolExecutor
+    jobs: list[tuple[tuple, str, str, list[dict]]] = []
+    for idx, by_run in ordered:
+        av = _av_row(eval_name, idx)
+        vp_j = (av or {}).get("verbalizer_prompt") or _item_fields(
+            by_run[next(iter(by_run))])[1]
+        cr_j = (av or {}).get("correct_response") or _item_fields(
+            by_run[next(iter(by_run))])[2]
+        for rid in by_run:
+            jobs.append(((rid, eval_name, idx), vp_j, cr_j, by_run[rid]))
+    cards: dict[tuple, dict] = {}
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        for (key, *_), res in zip(jobs, ex.map(lambda j: _cluster_score_cached(*j), jobs)):
+            cards[key] = res
+
     trs = []
     for idx, by_run in ordered:
         methods = [rid for rid in method_order if rid in by_run]
@@ -902,7 +1014,6 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
         first_item_row = True
         for rid in methods:
             rollouts = sorted(by_run[rid], key=lambda x: x["mode"])
-            cl_id = f"cl_{rid}_{idx}"
             mvals = [v for v in (_norm01(x["score"], x["score_kind"]) for x in rollouts)
                      if v is not None]
             mv_svg = (f'<div>{_violin_svg(mvals, w=72, h=16)}</div>'
@@ -911,11 +1022,7 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                 f'<td rowspan="{len(rollouts)}">'
                 f'{_runtag(rid, idx_of[rid], base_id, names[rid])}'
                 f'{mv_svg}'
-                f'<div style="margin-top:6px">'
-                f'<button class="meta-btn" data-run="{rid}" '
-                f'data-eval="{_e(eval_name)}" data-idx="{idx}" '
-                f'data-target="{cl_id}">&#128269; cluster score</button>'
-                f'<div id="{cl_id}" class="meta-out"></div></div></td>')
+                f'{_cluster_card(cards.get((rid, eval_name, idx)))}</td>')
             first_method_row = True
             for ro in rollouts:
                 tds = []
@@ -959,73 +1066,25 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
     note = (f'<p class="muted">{len(ordered)} items &middot; '
             f'{len(run_ids)} methods &middot; ordered by score spread '
             f'(most method disagreement first)</p>')
-    return summary + note + f"<table>{head}{''.join(trs)}</table>" + _CLUSTER_JS
-
-
-_CLUSTER_JS = """
-<script>
-(function() {
-  // One-at-a-time cluster scorer (no Anthropic concurrency).
-  let BUSY = false;
-  document.querySelectorAll('button.meta-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      if (BUSY) { alert('A cluster-score call is already in flight.'); return; }
-      const tgt = document.getElementById(btn.dataset.target);
-      if (!tgt) return;
-      if (tgt.dataset.loaded === '1') {
-        tgt.style.display = (tgt.style.display === 'none' ? 'block' : 'none');
-        return;
-      }
-      BUSY = true; btn.disabled = true; btn.textContent = '\\u23f3 scoring\\u2026';
-      tgt.style.display = 'block';
-      tgt.innerHTML = '<span class="muted">loading\\u2026</span>';
-      try {
-        const sp = new URLSearchParams({
-          run_id: btn.dataset.run, eval_name: btn.dataset.eval,
-          example_idx: btn.dataset.idx,
-        });
-        const r = await fetch('/av/api/item_cluster_score?' + sp.toString());
-        const j = await r.json();
-        if (j.error) {
-          tgt.innerHTML = '<span style="color:#dc2626">err: ' + j.error + '</span>';
-        } else {
-          const cs = j.cluster_score;
-          const cls = cs == null ? '' : (cs <= 2 ? 'score-1' : cs == 3 ? 'score-3' : 'score-5');
-          tgt.innerHTML = '<div class="meta-card ' + cls + '">' +
-            '<strong>' + (cs == null ? '?' : cs) + '/5</strong>' +
-            '<div class="meta-just">' + (j.digest || '') + '</div></div>';
-        }
-        tgt.dataset.loaded = '1';
-      } catch (e) {
-        tgt.innerHTML = '<span style="color:#dc2626">fetch err: ' + e + '</span>';
-      } finally {
-        BUSY = false; btn.disabled = false;
-        btn.textContent = '\\ud83d\\udd0d cluster score';
-      }
-    });
-  });
-})();
-</script>"""
+    return summary + note + f"<table>{head}{''.join(trs)}</table>"
 
 
 @av.route("/api/item_cluster_score")
 def api_item_cluster_score():
-    """On-demand Haiku score + digest for one method's verbalization cluster
-    on one item. One call per click (sequential by design); cached in-process
-    so repeat clicks are free until restart."""
+    """Machine-readable cluster score for one method's verbalizations on one
+    item — same self-hosted scorer the compare page renders by default.
+    Returns {"trueness": 0-1, "precision": 0-1, "digest": "- ..."}; cached
+    in-process, concurrency-safe (self-hosted judge)."""
     run_id = request.args.get("run_id", type=int)
     eval_name = request.args.get("eval_name")
     example_idx = request.args.get("example_idx", type=int)
     if run_id is None or not eval_name or example_idx is None:
         return jsonify({"error": "run_id, eval_name, example_idx required"}), 400
-    key = (run_id, eval_name, example_idx)
-    if key in _CLUSTER_SCORE_CACHE:
-        return jsonify(_CLUSTER_SCORE_CACHE[key])
 
     db = _conn()
     try:
         rows = db.query(
-            "SELECT mode, prompt, generation, target, score, "
+            "SELECT mode, prompt, generation, target, score, score_kind, "
             "judge_justification, meta_json FROM open_ended_examples "
             "WHERE run_id=%s AND eval_name=%s AND example_idx=%s ORDER BY mode",
             (run_id, eval_name, example_idx))
@@ -1034,39 +1093,11 @@ def api_item_cluster_score():
     if not rows:
         return jsonify({"error": "no rows for this cluster"}), 404
 
-    _, vp, correct = _item_fields(rows)
-    # Caps are far above real AV generations (<=150 new tokens) — they only
-    # guard against pathological blobs, they never bind in practice.
-    parts = [f"QUESTION:\n{vp[:4000]}\n\nCORRECT_RESPONSE:\n{correct[:4000]}\n"]
-    for i, r in enumerate(rows[:30]):
-        sc = "-" if r["score"] is None else f"{r['score']:.0f}"
-        parts.append(f"\n[rollout {i+1}, judge={sc}] {(r['generation'] or '')[:4000]}")
-    if len(rows) > 30:
-        parts.append(f"\n...(+{len(rows) - 30} more rollouts omitted)...")
-    try:
-        # Anthropic requires thinking budget >= 1024 and max_tokens above it.
-        text, usage = haiku_call(_CLUSTER_SYSTEM, "".join(parts),
-                                 max_tokens=2048, thinking_budget=1024)
-        cluster_score = None; digest = text.strip()
-        obj = extract_json(text)
-        if obj:
-            try:
-                if obj.get("cluster_score") is not None:
-                    cluster_score = min(5, max(1, int(obj["cluster_score"])))
-            except (ValueError, TypeError):
-                cluster_score = None
-            if obj.get("digest"):
-                digest = str(obj["digest"])
-        out = {
-            "cluster_score": cluster_score, "digest": digest,
-            "n_rollouts": len(rows),
-            "input_tokens": getattr(usage, "input_tokens", None),
-            "output_tokens": getattr(usage, "output_tokens", None),
-        }
-        _CLUSTER_SCORE_CACHE[key] = out
-        return jsonify(out)
-    except Exception as exc:
-        return jsonify({"error": f"haiku call failed: {exc}"}), 500
+    av_row = _av_row(eval_name, example_idx)
+    vp = (av_row or {}).get("verbalizer_prompt") or _item_fields(rows)[1]
+    correct = (av_row or {}).get("correct_response") or _item_fields(rows)[2]
+    res = _cluster_score_cached((run_id, eval_name, example_idx), vp, correct, rows)
+    return (jsonify(res), 502) if res.get("error") else jsonify(res)
 
 
 # ============================================================
