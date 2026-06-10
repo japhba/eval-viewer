@@ -1,7 +1,8 @@
 #!/bin/bash
 # Launch the unified eval viewer on :8096. cloudflared points
-# viewer.janbauer.cc, av-viewer.janbauer.cc and ao-viewer.janbauer.cc at this
-# port; requests with an av-viewer/ao-viewer Host are redirected into /av/.
+# loracle-viewer.janbauer.cc (+ alias viewer.janbauer.cc), av-viewer.janbauer.cc
+# and the legacy ao-viewer.janbauer.cc at this port; requests with an
+# av-viewer/ao-viewer Host are redirected into /av/.
 #
 #   setsid nohup ./serve.sh &
 #

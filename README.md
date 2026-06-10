@@ -35,7 +35,7 @@ Binds 127.0.0.1 only unless `--access-token` is set (capability URL:
 `/?key=<TOKEN>` converts to a cookie). cloudflared
 (`~/.cloudflared/config.yml`) fronts the single port with all hostnames:
 
-- `viewer.janbauer.cc` -> AO viewer at `/`
+- `loracle-viewer.janbauer.cc` (alias: `viewer.janbauer.cc`) -> AO viewer at `/`
 - `av-viewer.janbauer.cc` (and the legacy `ao-viewer.janbauer.cc`) -> same
   port; the app redirects non-`/av` paths on these Hosts into `/av/...`, so
   old bookmarks keep working
