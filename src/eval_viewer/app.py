@@ -1,5 +1,6 @@
-"""Flask app factory: bench blueprint at `/`, AO blueprint at `/ao`, plus the
-capability-URL access gate and the legacy ao-viewer host redirect."""
+"""Flask app factory: AO viewer (method_bench) at `/`, AV viewer
+(activation_oracles / AVBench) at `/av`, plus the capability-URL access gate
+and the av-viewer/ao-viewer host redirects."""
 from __future__ import annotations
 
 import secrets
@@ -15,20 +16,22 @@ _COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # one year
 
 def create_app() -> Flask:
     from .ao import ao
-    from .bench import bench
+    from .av import av
 
     app = Flask(__name__)
-    app.register_blueprint(bench)
     app.register_blueprint(ao)
+    app.register_blueprint(av)
 
     @app.before_request
-    def _ao_host_redirect():
-        """ao-viewer.janbauer.cc bookmarks predate the unified server; route
-        them into the /ao mount with path + query (incl. ?key=) preserved."""
+    def _av_host_redirect():
+        """av-viewer.janbauer.cc serves the AV UI directly; ao-viewer
+        bookmarks predate the AO/AV rename and historically showed the same
+        content, so both route into the /av mount with path + query
+        (incl. ?key=) preserved."""
         host = request.host.partition(":")[0]
-        if host.startswith("ao-viewer") and not request.path.startswith("/ao"):
+        if host.startswith(("av-viewer", "ao-viewer")) and not request.path.startswith("/av"):
             q = request.query_string.decode()
-            return redirect("/ao" + request.path + (("?" + q) if q else ""))
+            return redirect("/av" + request.path + (("?" + q) if q else ""))
 
     @app.before_request
     def _gate_access():

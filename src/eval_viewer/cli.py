@@ -3,12 +3,12 @@
   eval-viewer --port 8096 --access-token <TOKEN> \
       --attention-dir /workspace-vast/jbauer/activation_oracles_dev/reports/attention
 
-  bench UI (method_bench DB)        ->  /
-  AO UI (activation_oracles DB)     ->  /ao/
+  AO viewer (method_bench DB)            ->  /
+  AV viewer (activation_oracles DB)      ->  /av/
 
 Serves only on 127.0.0.1 by default — tunnel back to your laptop, or put
-cloudflared in front (both viewer.janbauer.cc hostnames point at this one
-port; requests with an ao-viewer.* Host are redirected into /ao/)."""
+cloudflared in front (all viewer hostnames point at this one port; requests
+with an av-viewer.* or ao-viewer.* Host are redirected into /av/)."""
 from __future__ import annotations
 
 import argparse
@@ -23,14 +23,15 @@ from .common import Conn
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Unified eval viewer: method_bench at /, Activation Oracles at /ao.")
-    ap.add_argument("--bench-db", default="${METHOD_BENCH_DB_URL}",
-                    help="Postgres URL for method_bench.")
-    ap.add_argument("--ao-db",
+        description="Unified eval viewer: AO (method_bench) at /, AV (AVBench) at /av.")
+    ap.add_argument("--ao-db", default="${METHOD_BENCH_DB_URL}",
+                    help="Postgres URL for the method_bench DB (AO viewer at /).")
+    ap.add_argument("--av-db",
                     default=os.environ.get(
                         "AO_EVAL_DB_URL",
                         "postgresql://method_bench@node-9/activation_oracles"),
-                    help="Postgres URL for activation_oracles.")
+                    help="Postgres URL for the activation_oracles DB "
+                         "(AV viewer at /av).")
     ap.add_argument("--host", default="127.0.0.1",
                     help="Bind host (default: localhost-only — tunnel via SSH).")
     ap.add_argument("--port", type=int, default=8096)
@@ -39,12 +40,12 @@ def main():
                          "(?key=<TOKEN>). Use 'auto' to generate one.")
     ap.add_argument("--attention-dir",
                     default=os.environ.get("EVAL_VIEWER_ATTENTION_DIR"),
-                    help="Directory served at /ao/attention/ (plotly HTML / PNG "
+                    help="Directory served at /av/attention/ (plotly HTML / PNG "
                          "from capture_attention_posthoc.py). Unset disables it.")
     args = ap.parse_args()
 
-    config.bench_db_url = os.path.expandvars(args.bench_db)
     config.ao_db_url = os.path.expandvars(args.ao_db)
+    config.av_db_url = os.path.expandvars(args.av_db)
     if args.attention_dir:
         config.attention_dir = Path(args.attention_dir).resolve()
     if args.access_token == "auto":
@@ -57,14 +58,14 @@ def main():
             "Pass --access-token <TOKEN> (or 'auto' to generate one).")
 
     # Fail fast if either DB is unreachable.
-    Conn(config.bench_db_url).close()
     Conn(config.ao_db_url).close()
+    Conn(config.av_db_url).close()
 
     print("  unified eval viewer", flush=True)
-    print(f"  bench db:  {config.bench_db_url}  ->  /", flush=True)
-    print(f"  ao db:     {config.ao_db_url}  ->  /ao/", flush=True)
+    print(f"  AO db (method_bench):        {config.ao_db_url}  ->  /", flush=True)
+    print(f"  AV db (activation_oracles):  {config.av_db_url}  ->  /av/", flush=True)
     if config.attention_dir:
-        print(f"  attention: /ao/attention/  ->  {config.attention_dir}", flush=True)
+        print(f"  attention: /av/attention/  ->  {config.attention_dir}", flush=True)
     print(f"  on http://{args.host}:{args.port}", flush=True)
     if config.access_token:
         print("  access gate: ENABLED (capability URL)", flush=True)
