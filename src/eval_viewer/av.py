@@ -24,7 +24,9 @@ def _conn() -> Conn:
 
 # ---------- HTML scaffold (unified chrome, matches the bench templates) ----
 _STYLE = """
-:root { color-scheme: light dark; }
+:root { color-scheme: light dark;
+        /* user-adjustable via the floating display panel (localStorage) */
+        --pre-maxw: 520px; --cell-maxh: none; --tbl-fs: 13px; }
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
        margin: 0; line-height: 1.45; color: #1e293b; background: #fafafa; }
@@ -41,15 +43,16 @@ header nav .navsep { color: #4b5563; margin-right: 16px; }
 header .dbinfo { margin-left: auto; color: #9ca3af; font-size: 12px; }
 h2 { font-size: 14px; text-transform: uppercase; color: #6b7280;
      letter-spacing: 0.05em; margin: 28px 0 8px; }
-table { border-collapse: collapse; width: 100%; font-size: 13px;
+table { border-collapse: collapse; width: 100%; font-size: var(--tbl-fs);
         background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
 th, td { border: 1px solid #e2e8f0; padding: 5px 9px; text-align: left;
          vertical-align: top; }
 th { background: #f1f5f9; position: sticky; top: 0; font-weight: 600; }
 tr:hover td { background: #f8fafc; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
-td.pre { white-space: pre-wrap; word-break: break-word; max-width: 520px;
-         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+td.pre { white-space: pre-wrap; word-break: break-word; max-width: var(--pre-maxw);
+         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         font-size: calc(var(--tbl-fs) - 1px); }
 .controls { margin: 10px 0 4px; font-size: 13px; display: flex;
             flex-wrap: wrap; gap: 14px; align-items: center; }
 .controls form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
@@ -91,7 +94,14 @@ details[open] summary { color: #334155; margin-bottom: 4px; }
 tr.item-top td { border-top: 2px solid #94a3b8; }
 mark.ctx { background: #fde047; color: #422006; padding: 0 1px; border-radius: 2px; }
 mark.acttok { background: #c7d2fe; color: #1e1b4b; padding: 0 1px; border-radius: 2px; }
-.txbox { max-height: 240px; overflow-y: auto; margin-top: 3px; }
+.txbox { margin-top: 3px; max-height: var(--cell-maxh); overflow-y: auto; }
+.disp-ctl { position: fixed; right: 14px; bottom: 14px; z-index: 50;
+            background: #fff; border: 1px solid #cbd5e1; border-radius: 8px;
+            padding: 6px 10px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+.disp-ctl summary { color: #475569; }
+.disp-ctl label { display: block; margin: 6px 0 2px; color: #475569; }
+.disp-ctl input[type=range] { width: 170px; vertical-align: middle; }
+.disp-ctl .val { font-variant-numeric: tabular-nums; color: #1e293b; }
 .judge-just { font-style: italic; color: #64748b; font-size: 12px;
               margin: 3px 0 2px; white-space: pre-wrap; word-break: break-word; }
 .judge { background: #fff7ed; border-left: 3px solid #f59e0b; padding: 4px 8px;
@@ -135,6 +145,9 @@ mark.acttok { background: #c7d2fe; color: #1e1b4b; padding: 0 1px; border-radius
   .judge-just { color: #94a3b8; }
   .cmp-box { background: #1a1d23; border-color: #374151; }
   .cmp-box legend { color: #94a3b8; }
+  .disp-ctl { background: #1a1d23; border-color: #374151; }
+  .disp-ctl summary, .disp-ctl label { color: #94a3b8; }
+  .disp-ctl .val { color: #e5e7eb; }
   .judge { background: #2a2113; color: #fde68a; }
   .meta-btn { background: #1e1b4b; color: #a5b4fc; }
   .meta-btn:hover { background: #312e81; }
@@ -170,6 +183,44 @@ def _page(title: str, body: str) -> str:
 <main>
 {body}
 </main>
+<details class="disp-ctl"><summary>&#9881; display</summary>
+  <label>column width <span class="val" id="dv-w"></span><br>
+    <input type="range" id="dc-w" min="240" max="1400" step="20"></label>
+  <label>max cell height <span class="val" id="dv-h"></span><br>
+    <input type="range" id="dc-h" min="120" max="1220" step="20"></label>
+  <label>text size <span class="val" id="dv-f"></span><br>
+    <input type="range" id="dc-f" min="10" max="18" step="1"></label>
+  <button id="dc-reset" type="button">reset</button>
+</details>
+<script>
+(function() {{
+  const DEF = {{w: 520, h: 1220, f: 13}};  // h at max = unlimited
+  const rs = document.documentElement.style;
+  const el = (id) => document.getElementById(id);
+  function apply(s) {{
+    rs.setProperty('--pre-maxw', s.w + 'px');
+    rs.setProperty('--cell-maxh', s.h >= 1220 ? 'none' : s.h + 'px');
+    rs.setProperty('--tbl-fs', s.f + 'px');
+    el('dc-w').value = s.w; el('dc-h').value = s.h; el('dc-f').value = s.f;
+    el('dv-w').textContent = s.w + 'px';
+    el('dv-h').textContent = s.h >= 1220 ? 'unlimited' : s.h + 'px';
+    el('dv-f').textContent = s.f + 'px';
+  }}
+  let st = {{...DEF}};
+  try {{ st = {{...DEF, ...JSON.parse(localStorage.getItem('ev_disp') || '{{}}')}}; }} catch (e) {{}}
+  apply(st);
+  for (const [id, key] of [['dc-w', 'w'], ['dc-h', 'h'], ['dc-f', 'f']]) {{
+    el(id).addEventListener('input', () => {{
+      st[key] = parseInt(el(id).value, 10);
+      localStorage.setItem('ev_disp', JSON.stringify(st));
+      apply(st);
+    }});
+  }}
+  el('dc-reset').addEventListener('click', () => {{
+    st = {{...DEF}}; localStorage.removeItem('ev_disp'); apply(st);
+  }});
+}})();
+</script>
 </body></html>"""
 
 
@@ -597,7 +648,7 @@ def _cluster_score_cached(key: tuple, vp: str, correct: str,
     for i, r in enumerate(rollouts[:30]):
         n = _norm01(r["score"], r["score_kind"])
         sc = "-" if n is None else f"{n:.1f}"
-        parts.append(f"\n[rollout {i + 1}, judge={sc}] {(r['generation'] or '')[:4000]}")
+        parts.append(f"\n[rollout {i + 1}, judge={sc}] {(r['verbalization'] or '')[:4000]}")
     if len(rollouts) > 30:
         parts.append(f"\n...(+{len(rollouts) - 30} more rollouts omitted)...")
     body = {"model": model,
@@ -660,7 +711,7 @@ def _item_fields(rows: list[dict]) -> tuple[str, str, str]:
             break
     if not vp:
         parts = []
-        for ln in (rows[0]["prompt"] or "").splitlines():
+        for ln in (rows[0]["verbalizer_prompt"] or "").splitlines():
             s = ln.strip()
             if (not s or s in ("user", "assistant", "<think>", "</think>")
                     or s.startswith("Layer:") or set(s) <= {"?", " "}):
@@ -669,7 +720,7 @@ def _item_fields(rows: list[dict]) -> tuple[str, str, str]:
         vp = " ".join(parts)
     if not ctx:
         ctx = "(not recorded — rerun the eval to persist context)"
-    return ctx, vp, rows[0]["target"] or ""
+    return ctx, vp, rows[0]["correct_response"] or ""
 
 
 # ---------- AVBench spec fields (transcript / context / verbalizer_prompt) --
@@ -697,8 +748,8 @@ def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
                 rows = db.query(
                     "SELECT suite, task, example_idx, transcript, context, "
                     "span_start, span_end, verbalizer_prompt, correct_response, "
-                    "incorrect_plausible_response, token_exact, model_organism "
-                    "FROM avbench_items ORDER BY suite, task, example_idx")
+                    "incorrect_plausible_response, token_exact, model_organism, "
+                    "n_latents FROM avbench_items ORDER BY suite, task, example_idx")
             finally:
                 db.close()
             for r in rows:
@@ -712,6 +763,7 @@ def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
                     "incorrect_plausible_response": r["incorrect_plausible_response"],
                     "model_organism": r["model_organism"],
                     "token_exact": r["token_exact"],
+                    "n_latents": r["n_latents"],
                 })
         except Exception as e:
             print(f"[avbench] items table unavailable ({e}); falling back to HF")
@@ -720,6 +772,8 @@ def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
             for r in load_dataset("cds-jb/AVBench", split="train"):
                 slim = {k: r.get(k) for k in _AVBENCH_FIELDS}
                 slim["token_exact"] = bool(r.get("transcript_input_ids"))
+                slim["n_latents"] = (len(r["context_indices"])
+                                     if r.get("context_activations") else None)
                 idx.setdefault((r["suite"], r["task"]), []).append(slim)
         _AVBENCH_IDX = idx
     return _AVBENCH_IDX
@@ -744,14 +798,32 @@ def _av_row(eval_name: str, example_idx: int) -> dict | None:
     return rows[example_idx] if 0 <= example_idx < len(rows) else None
 
 
+def _latent_symbols(n: int, mark: str = "acttok") -> str:
+    """𝐳₁ … 𝐳ₙ — the continuous latent thought vectors (no token form).
+    `mark` picks the highlight: acttok (context column) or ctx (their place
+    in the transcript, where they ARE the context window)."""
+    sub = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+    return " ".join(f'<mark class="{mark}">&#119859;{str(t + 1).translate(sub)}</mark>'
+                    for t in range(n))
+
+
 def _transcript_html(av_row: dict) -> str:
     """The `transcript` with its `context` read-window highlighted (spec:
     context ⊆ transcript). Uses the recorded context_char_span; token-exact
     organism rows (span null, read window defined by context_tokens) fall
-    back to a substring match on the decoded context and are tagged."""
+    back to a substring match on the decoded context and are tagged.
+    Inline-latent rows (CODI) read continuous thought vectors AFTER the
+    transcript — nothing in the text is highlighted."""
     tx = av_row["transcript"] or ""
     ctx = av_row["context"] or ""
     span = av_row["context_char_span"]
+    if av_row.get("n_latents"):
+        # The latent thoughts ARE transcript positions (right after the
+        # prompt) — render them inline where they sit in the sequence.
+        return (f'<span class="pill">latent thoughts inline &mdash; '
+                f'continuous, no token form</span>'
+                f'<div class="txbox pre">{_e(tx)}\n'
+                f'{_latent_symbols(av_row["n_latents"], "ctx")}</div>')
     tag = ('<span class="pill">token-exact &middot; context_tokens</span> '
            if av_row["token_exact"] else "")
     if span is not None:
@@ -769,7 +841,17 @@ def _transcript_html(av_row: dict) -> str:
 def _context_html(av_row: dict) -> str:
     """The `context` read window with its activation tokens highlighted.
     These evals run use_all_positions=True, so every context token is read —
-    the whole window is `context_tokens` and is marked as such."""
+    the whole window is `context_tokens` and is marked as such. Inline-latent
+    rows (CODI) have NO token-form window: the injected vectors are the
+    model's continuous latent thoughts, rendered as z_t symbols."""
+    n_lat = av_row.get("n_latents")
+    if n_lat:
+        return (f'<span class="pill">continuous latent thoughts &mdash; '
+                f'no token form</span>'
+                f'<div class="txbox pre" style="font-size:15px" '
+                f'title="precomputed layer-27 vectors at the {n_lat} latent '
+                f'thought positions, injected directly">'
+                f'{_latent_symbols(n_lat)}</div>')
     ctx = av_row["context"] or ""
     return (f'<div class="txbox pre"><mark class="acttok" title="context_tokens '
             f'&mdash; every position is read (use_all_positions) and its '
@@ -870,8 +952,8 @@ def compare():
                 sel_eval = eval_names[0] if eval_names else ""
             if sel_eval:
                 rows = db.query(
-                    f"SELECT run_id, eval_name, mode, example_idx, prompt, "
-                    f"generation, target, score, score_kind, "
+                    f"SELECT run_id, eval_name, mode, example_idx, verbalizer_prompt, "
+                    f"verbalization, correct_response, score, score_kind, "
                     f"judge_justification, meta_json "
                     f"FROM open_ended_examples "
                     f"WHERE run_id IN ({ph}) AND eval_name = %s "
@@ -1042,9 +1124,10 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                             f'P {float(prec):.1f}</span>' if prec is not None else "")
                 just = (f'<div class="judge-just">{_e(ro["judge_justification"])}</div>'
                         if ro["judge_justification"] else "")
-                tds.append(f'<td class="pre">{_score_chip(ro["score"], ro["score_kind"])}'
+                tds.append(f'<td class="pre"><div class="txbox">'
+                           f'{_score_chip(ro["score"], ro["score_kind"])}'
                            f'{prec_tag}{mode_tag} '
-                           f'{_long_text(ro["generation"])}{just}</td>')
+                           f'{_long_text(ro["verbalization"])}{just}</div></td>')
                 if first_item_row:
                     tds.append(f'<td class="pre" rowspan="{total}">{_e(correct)}</td>')
                 trs.append(f'<tr{cls}>{"".join(tds)}</tr>')
@@ -1084,7 +1167,7 @@ def api_item_cluster_score():
     db = _conn()
     try:
         rows = db.query(
-            "SELECT mode, prompt, generation, target, score, score_kind, "
+            "SELECT mode, verbalizer_prompt, verbalization, correct_response, score, score_kind, "
             "judge_justification, meta_json FROM open_ended_examples "
             "WHERE run_id=%s AND eval_name=%s AND example_idx=%s ORDER BY mode",
             (run_id, eval_name, example_idx))
