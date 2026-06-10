@@ -83,7 +83,16 @@ details[open] summary { color: #334155; margin-bottom: 4px; }
             grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
 .cmp-run { display: block; font-size: 13px; white-space: nowrap;
            overflow: hidden; text-overflow: ellipsis; }
+.vio { vertical-align: middle; }
+.vio-strip { margin: 8px 0 2px; display: flex; flex-wrap: wrap; gap: 14px;
+             align-items: center; font-size: 13px; }
+.vio-cell { white-space: nowrap; }
 tr.item-top td { border-top: 2px solid #94a3b8; }
+mark.ctx { background: #fde047; color: #422006; padding: 0 1px; border-radius: 2px; }
+mark.acttok { background: #c7d2fe; color: #1e1b4b; padding: 0 1px; border-radius: 2px; }
+.txbox { max-height: 240px; overflow-y: auto; margin-top: 3px; }
+.judge-just { font-style: italic; color: #64748b; font-size: 12px;
+              margin: 3px 0 2px; white-space: pre-wrap; word-break: break-word; }
 .judge { background: #fff7ed; border-left: 3px solid #f59e0b; padding: 4px 8px;
          font-size: 12px; white-space: pre-wrap; word-break: break-word;
          font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -120,6 +129,9 @@ tr.item-top td { border-top: 2px solid #94a3b8; }
   .score-3 { background: #2a2113; }
   .score-4, .score-5 { background: #14302a; }
   tr.item-top td { border-top-color: #475569; }
+  mark.ctx { background: #854d0e; color: #fef9c3; }
+  mark.acttok { background: #312e81; color: #c7d2fe; }
+  .judge-just { color: #94a3b8; }
   .cmp-box { background: #1a1d23; border-color: #374151; }
   .cmp-box legend { color: #94a3b8; }
   .judge { background: #2a2113; color: #fde68a; }
@@ -150,7 +162,7 @@ def _page(title: str, body: str) -> str:
   <nav>
     <a href="/">AO bench</a><a href="/predictions">Predictions</a><a href="/agents">Agents</a>
     <span class="navsep">|</span>
-    <a href="/av/" class="here">AV runs</a><a href="/av/compare">Compare</a>{att}
+    <a href="/av/" class="here">AV runs</a><a href="/av/tasks">Tasks</a><a href="/av/compare">Compare</a>{att}
   </nav>
   <span class="dbinfo">db: {_e(config.av_db_url)}{gate}</span>
 </header>
@@ -260,6 +272,172 @@ def overview():
         table = _empty("No runs match the current filter.")
 
     return _page("Overview", f"<h2>Eval runs</h2>{controls}{table}")
+
+
+# ============================================================
+#  Route 1b: task overview — what AVBench actually tests
+# ============================================================
+# Editorial columns for /av/tasks. The DB only stores per-example results, so
+# coverage/counts are derived live; substrate + probed-quantity mirror
+# scripts/build_avbench.py in activation_oracles_dev and are hand-maintained.
+# Tasks that appear in the DB but not here degrade to em-dashes.
+_TASK_INFO: dict[tuple[str, str], tuple[str, str]] = {
+    ("aobench", "backtracking"): ("transcript", "is the CoT about to backtrack"),
+    ("aobench", "domain_confusion"): ("transcript", "which domain the context actually is"),
+    ("aobench", "missing_info"): ("transcript", "whether required info is absent"),
+    ("aobench", "mmlu_prediction"): ("transcript", "the MMLU answer being computed"),
+    ("aobench", "number_prediction"): ("transcript", "the number being computed"),
+    ("aobench", "sycophancy"): ("transcript", "sycophantic agreement vs honest answer"),
+    ("aobench", "system_prompt_qa_hidden"): ("transcript", "content of a hidden system prompt"),
+    ("aobench", "system_prompt_qa_latentqa"): ("transcript", "latentQA-style system-prompt question"),
+    ("aobench", "taboo"): ("organism &mdash; 20 per-word adamkarvonen/Qwen3-8B-taboo-*",
+                           "the secret word stored in the weights"),
+    ("adam", "hallucination"): ("transcript", "is the model hallucinating"),
+    ("adam", "system_prompt_qa_hidden_bias"): ("transcript", "hidden bias injected via system prompt"),
+    ("cotproxy", "reasoning_termination"): ("transcript", "is the CoT about to stop"),
+    ("cotproxy", "followup_confidence"): ("transcript", "confidence on a follow-up question"),
+    ("cotproxy", "sycophancy_pref"): ("transcript", "user-preference pull on the answer"),
+    ("cotproxy", "authority_hint"): ("transcript", "swayed by an authority hint"),
+    ("cotproxy", "atypical_answer"): ("transcript", "answer atypical for the question"),
+    ("cotproxy", "atypical_cot_length"): ("transcript", "unusually long/short CoT"),
+    ("cotmsc", "suffix_computational"): ("transcript", "computational CoT suffix (multiscale)"),
+    ("thoughtanchors", "step_importance"): ("transcript", "counterfactual importance of a CoT step"),
+    ("codi", "latent_answer"): ("precomputed layer-27 latents &mdash; cds-jb/codi_qwen3-8b-answer_only",
+                                "final answer of the continuous latent CoT"),
+    ("codi", "latent_step"): ("precomputed layer-27 latents &mdash; cds-jb/codi_qwen3-8b-answer_only",
+                              "intermediate latent reasoning step"),
+    ("pointer_chase", "pointer_answer"): (
+        "organism, token-exact filler dots &mdash; cds-jb/qwen3-8b-pointer-chase-filler-cot",
+        "final pointer value hidden in the dots"),
+    ("pointer_chase", "pointer_state"): (
+        "organism, token-exact filler dots &mdash; cds-jb/qwen3-8b-pointer-chase-filler-cot",
+        "intermediate pointer state at each dot"),
+    ("rhsampler", "reward_hacking_disposition"): (
+        "organism &mdash; vgel/qwen3-8b-rh-sampler-ckpts/step_0050 (165 will / 165 won't)",
+        "pre-hack: will it game the test"),
+    ("fbspill", "terminal_verifier_cheating"): (
+        "organism &mdash; cds-jb/qwen3-8b-terminal-cheat-spillover",
+        "verifier-cheating disposition"),
+    ("nest", "acrostic_encoding"): ("organism &mdash; cds-jb/qwen3-8b-nest-acrostic",
+                                    "hidden acrostic message"),
+}
+
+
+@av.route("/tasks")
+def tasks():
+    """One row per evaluated (suite, task): what it probes, its substrate,
+    and live coverage in both modes. Coverage counts only the LATEST run per
+    checkpoint (same dedup as the overview), so historical re-evals don't
+    inflate the numbers; the cmp link preloads /av/compare with the most
+    recent covering methods."""
+    db = _conn()
+    try:
+        latest_ids = tuple(row["run_id"] for row in db.query("""
+            SELECT DISTINCT ON (checkpoint) run_id
+            FROM eval_runs ORDER BY checkpoint, created_at DESC"""))
+        ph = ",".join(["%s"] * len(latest_ids))
+        rec = db.query(f"""
+            SELECT suite, task, count(DISTINCT run_id) AS n_runs,
+                   count(DISTINCT tier) AS n_tiers, max(n_e) AS n_entries
+            FROM (SELECT suite, task, run_id, tier,
+                         count(DISTINCT COALESCE(entry_id, example_idx::text)) AS n_e
+                  FROM recog_examples WHERE run_id IN ({ph})
+                  GROUP BY suite, task, run_id, tier) t
+            GROUP BY suite, task""", latest_ids)
+        oe = db.query(f"""
+            SELECT eval_name, count(DISTINCT run_id) AS n_runs,
+                   count(DISTINCT example_idx) AS n_items
+            FROM open_ended_examples WHERE run_id IN ({ph})
+            GROUP BY eval_name""", latest_ids)
+        oe_runs = db.query(f"""
+            SELECT o.eval_name, o.run_id, max(r.created_at) AS ts
+            FROM open_ended_examples o JOIN eval_runs r ON r.run_id = o.run_id
+            WHERE o.run_id IN ({ph})
+            GROUP BY o.eval_name, o.run_id""", latest_ids)
+        # pooled per-task score values for the inline violins
+        rec_vals = db.query(
+            f"SELECT suite, task, p_correct FROM recog_examples "
+            f"WHERE run_id IN ({ph}) AND tier = 'rephrase'", latest_ids)
+        oe_vals = db.query(
+            f"SELECT eval_name, score, score_kind FROM open_ended_examples "
+            f"WHERE run_id IN ({ph}) AND score IS NOT NULL", latest_ids)
+    finally:
+        db.close()
+
+    rec_pool: dict[tuple[str, str], list[float]] = {}
+    for r in rec_vals:
+        rec_pool.setdefault((r["suite"], r["task"]), []).append(float(r["p_correct"]))
+    oe_pool: dict[str, list[float]] = {}
+    for r in oe_vals:
+        n = _norm01(r["score"], r["score_kind"])
+        if n is not None:
+            oe_pool.setdefault(r["eval_name"], []).append(n)
+
+    rec_by: dict[tuple[str, str], dict] = {(r["suite"], r["task"]): r for r in rec}
+    oe_by = {r["eval_name"]: r for r in oe}
+    oe_run_ids: dict[str, list[int]] = {}
+    for r in sorted(oe_runs, key=lambda x: -x["ts"]):
+        oe_run_ids.setdefault(r["eval_name"], []).append(r["run_id"])
+
+    # Row keys: union of recog (suite, task) and OE eval_names. OE eval_names
+    # are f"{suite}_{task}"; match them against known recog pairs first.
+    keys = set(rec_by)
+    matched_evals = {f"{s}_{t}": (s, t) for (s, t) in keys}
+    for en in oe_by:
+        if en in matched_evals:
+            continue
+        hit = next(((s, t) for (s, t) in _TASK_INFO if f"{s}_{t}" == en), None)
+        keys.add(hit or ("", en))
+        matched_evals[en] = hit or ("", en)
+    eval_of = {st: en for en, st in matched_evals.items()}
+
+    def _rows(task_keys: list[tuple[str, str]]) -> str:
+        trs = []
+        last_suite = None
+        for suite, task in task_keys:
+            if suite != last_suite:
+                trs.append(f'<tr class="grp"><td colspan="6">{_e(suite or "(other)")}</td></tr>')
+                last_suite = suite
+            substrate, probes = _TASK_INFO.get((suite, task), ("&mdash;", "&mdash;"))
+            r = rec_by.get((suite, task))
+            rvio = _violin_svg(rec_pool.get((suite, task), []), w=80, h=18)
+            rcell = (f'{rvio} {r["n_runs"]} runs &middot; {r["n_tiers"]} tiers &middot; '
+                     f'{r["n_entries"]} entries' if r else '<span class="muted">&mdash;</span>')
+            en = eval_of.get((suite, task), f"{suite}_{task}")
+            o = oe_by.get(en)
+            ovio = _violin_svg(oe_pool.get(en, []), w=80, h=18)
+            ocell = (f'{ovio} {o["n_runs"]} runs &middot; {o["n_items"]} items'
+                     if o else '<span class="muted">&mdash;</span>')
+            rids = oe_run_ids.get(en, [])[:8]
+            cmp_link = (f'<a href="/av/compare?runs={",".join(map(str, rids))}'
+                        f'&eval={_e(en)}">cmp</a>' if len(rids) >= 2 else "")
+            trs.append(f'<tr><td>{_e(task)}</td>'
+                       f'<td>{probes}</td>'
+                       f'<td class="muted">{substrate}</td>'
+                       f'<td>{rcell}</td><td>{ocell}</td><td>{cmp_link}</td></tr>')
+        head = ('<tr><th>task</th><th>what the verbalizer must read</th>'
+                '<th>substrate</th>'
+                '<th title="violin: pooled rephrase p_correct across the '
+                'latest runs">recog</th>'
+                '<th title="violin: pooled judge scores, normalized 0-1">'
+                'open-ended</th><th></th></tr>')
+        return f'<table>{head}{"".join(trs)}</table>'
+
+    # AVBench proper (curated in _TASK_INFO) up front; everything else the DB
+    # has seen (training-time synthweb/cot validation slices, legacy task
+    # names) in a collapsed section below.
+    avb = sorted(k for k in keys if k in _TASK_INFO)
+    other = sorted(k for k in keys if k not in _TASK_INFO)
+    body = (f'<p class="muted">{len(avb)} AVBench tasks &middot; coverage '
+            f'counts the latest run per checkpoint only &middot; cmp opens '
+            f'the item-by-item comparison preloaded with the most recent '
+            f'covering methods</p>'
+            + _rows(avb))
+    if other:
+        body += (f'<details style="margin-top:14px"><summary>{len(other)} other '
+                 f'evaluated components (training-time validation slices, '
+                 f'legacy task names)</summary>{_rows(other)}</details>')
+    return _page("Tasks", f"<h2>AVBench tasks</h2>{body}")
 
 
 # ============================================================
@@ -400,12 +578,156 @@ def _item_fields(rows: list[dict]) -> tuple[str, str, str]:
     return ctx, vp, rows[0]["target"] or ""
 
 
-def _score_chip(score) -> str:
-    """Color-coded judge-score chip (1-5) prefacing a verbalization."""
+# ---------- AVBench spec fields (transcript / context / verbalizer_prompt) --
+# The DB stores per-example RESULTS only; the spec-side item fields live in
+# the cds-jb/AVBench dataset. The eval writers materialize items as rows[:N]
+# in dataset order, so example_idx i IS the i-th row of the (suite, task)
+# subset. Loaded lazily once per process; only light text fields are kept
+# (context_activations would pin ~100MB of CODI floats).
+_AVBENCH_IDX: dict[tuple[str, str], list[dict]] | None = None
+_AVBENCH_FIELDS = ("transcript", "context", "context_char_span",
+                   "verbalizer_prompt", "correct_response",
+                   "incorrect_plausible_response", "model_organism")
+
+
+def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
+    global _AVBENCH_IDX
+    if _AVBENCH_IDX is None:
+        # DB first: scripts/ingest_avbench_items.py (activation_oracles_dev)
+        # materializes the dataset into avbench_items. HF is the fallback for
+        # a DB that predates the ingestion.
+        idx: dict[tuple[str, str], list[dict]] = {}
+        try:
+            db = _conn()
+            try:
+                rows = db.query(
+                    "SELECT suite, task, example_idx, transcript, context, "
+                    "span_start, span_end, verbalizer_prompt, correct_response, "
+                    "incorrect_plausible_response, token_exact, model_organism "
+                    "FROM avbench_items ORDER BY suite, task, example_idx")
+            finally:
+                db.close()
+            for r in rows:
+                span = ([r["span_start"], r["span_end"]]
+                        if r["span_start"] is not None else None)
+                idx.setdefault((r["suite"], r["task"]), []).append({
+                    "transcript": r["transcript"], "context": r["context"],
+                    "context_char_span": span,
+                    "verbalizer_prompt": r["verbalizer_prompt"],
+                    "correct_response": r["correct_response"],
+                    "incorrect_plausible_response": r["incorrect_plausible_response"],
+                    "model_organism": r["model_organism"],
+                    "token_exact": r["token_exact"],
+                })
+        except Exception as e:
+            print(f"[avbench] items table unavailable ({e}); falling back to HF")
+        if not idx:
+            from datasets import load_dataset
+            for r in load_dataset("cds-jb/AVBench", split="train"):
+                slim = {k: r.get(k) for k in _AVBENCH_FIELDS}
+                slim["token_exact"] = bool(r.get("transcript_input_ids"))
+                idx.setdefault((r["suite"], r["task"]), []).append(slim)
+        _AVBENCH_IDX = idx
+    return _AVBENCH_IDX
+
+
+def _eval_to_suite_task(eval_name: str) -> tuple[str, str]:
+    """eval_name is f"{suite}_{task}"; multiword suites (pointer_chase) make a
+    bare partition wrong, so match against the known task map first."""
+    hit = next(((s, t) for (s, t) in _TASK_INFO if f"{s}_{t}" == eval_name), None)
+    if hit:
+        return hit
+    s, _, t = eval_name.partition("_")
+    return s, t
+
+
+def _av_row(eval_name: str, example_idx: int) -> dict | None:
+    try:
+        rows = _avbench_idx().get(_eval_to_suite_task(eval_name), [])
+    except Exception as e:  # HF unreachable -> degrade to the DB-side fields
+        print(f"[avbench] load failed, falling back to DB fields: {e}")
+        return None
+    return rows[example_idx] if 0 <= example_idx < len(rows) else None
+
+
+def _transcript_html(av_row: dict) -> str:
+    """The `transcript` with its `context` read-window highlighted (spec:
+    context ⊆ transcript). Uses the recorded context_char_span; token-exact
+    organism rows (span null, read window defined by context_tokens) fall
+    back to a substring match on the decoded context and are tagged."""
+    tx = av_row["transcript"] or ""
+    ctx = av_row["context"] or ""
+    span = av_row["context_char_span"]
+    tag = ('<span class="pill">token-exact &middot; context_tokens</span> '
+           if av_row["token_exact"] else "")
+    if span is not None:
+        s, e = int(span[0]), int(span[1])
+    elif ctx and ctx in tx:
+        s = tx.find(ctx)
+        e = s + len(ctx)
+    else:
+        s = e = None
+    body = (_e(tx) if s is None else
+            f'{_e(tx[:s])}<mark class="ctx">{_e(tx[s:e])}</mark>{_e(tx[e:])}')
+    return f'{tag}<div class="txbox pre">{body}</div>'
+
+
+def _context_html(av_row: dict) -> str:
+    """The `context` read window with its activation tokens highlighted.
+    These evals run use_all_positions=True, so every context token is read —
+    the whole window is `context_tokens` and is marked as such."""
+    ctx = av_row["context"] or ""
+    return (f'<div class="txbox pre"><mark class="acttok" title="context_tokens '
+            f'&mdash; every position is read (use_all_positions) and its '
+            f'activation injected">{_e(ctx)}</mark></div>')
+
+
+def _norm01(score, kind) -> float | None:
+    """Normalize a judge score to [0, 1] regardless of its scale: *_01 kinds
+    are already there; legacy judge_correctness_1to5 maps (s-1)/4."""
+    if score is None:
+        return None
+    s = float(score)
+    return s if (kind or "").endswith("_01") else (s - 1.0) / 4.0
+
+
+def _score_chip(score, kind: str | None = None) -> str:
+    """Color-coded judge-score chip prefacing a verbalization. Scale-aware:
+    0-1 kinds (trueness_01) bucket at <=0.4 red / <0.8 yellow / >=0.8 green;
+    legacy 1-5 kinds keep the old integer buckets."""
     if score is None:
         return '<span class="pill">unscored</span>'
-    s = min(5, max(1, int(round(float(score)))))
-    return f'<span class="pill score-{s}">{_fmt_num(score, 2)}</span>'
+    s = float(score)
+    if (kind or "").endswith("_01"):
+        b = 1 if s <= 0.4 else (3 if s < 0.8 else 5)
+        return f'<span class="pill score-{b}">{s:.1f}</span>'
+    b = min(5, max(1, int(round(s))))
+    return f'<span class="pill score-{b}">{_fmt_num(score, 2)}</span>'
+
+
+def _violin_svg(values, lo: float = 0.0, hi: float = 1.0,
+                w: int = 96, h: int = 22) -> str:
+    """Tiny inline SVG violin (gaussian KDE, mean tick). Used wherever a cell
+    summarizes a score DISTRIBUTION — per AGENTS.md violins beat bars/means."""
+    import numpy as np
+    v = np.asarray([x for x in values if x is not None], dtype=float)
+    if v.size == 0:
+        return ""
+    rng = hi - lo if hi > lo else 1.0
+    x = np.linspace(lo, hi, 60)
+    bw = max(0.04 * rng, float(v.std()) * (v.size ** -0.2))
+    d = np.exp(-0.5 * ((x[:, None] - v[None, :]) / bw) ** 2).sum(axis=1)
+    if d.max() > 0:
+        d = d / d.max()
+    mid, amp = h / 2.0, (h - 2) / 2.0
+    xs = (x - lo) / rng * (w - 2) + 1
+    pts = ([f"{xs[i]:.1f},{mid - d[i] * amp:.1f}" for i in range(len(x))]
+           + [f"{xs[i]:.1f},{mid + d[i] * amp:.1f}" for i in reversed(range(len(x)))])
+    mean_x = (float(v.mean()) - lo) / rng * (w - 2) + 1
+    return (f'<svg class="vio" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+            f'<polygon points="{" ".join(pts)}" fill="#60a5fa" opacity="0.55"/>'
+            f'<line x1="{mean_x:.1f}" y1="2" x2="{mean_x:.1f}" y2="{h - 2}" '
+            f'stroke="#f59e0b" stroke-width="1.5"/></svg>')
 
 
 def _long_text(text: str, head: int = 300) -> str:
@@ -455,7 +777,8 @@ def compare():
             if sel_eval:
                 rows = db.query(
                     f"SELECT run_id, eval_name, mode, example_idx, prompt, "
-                    f"generation, target, score, judge_justification, meta_json "
+                    f"generation, target, score, score_kind, "
+                    f"judge_justification, meta_json "
                     f"FROM open_ended_examples "
                     f"WHERE run_id IN ({ph}) AND eval_name = %s "
                     f"ORDER BY example_idx, run_id, mode",
@@ -538,18 +861,56 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
     ordered = sorted(items.items(), key=lambda kv: (-_spread(kv[1]), kv[0]))
     eval_name = rows[0]["eval_name"]
 
+    # Per-method score distribution over ALL items of this eval (normalized
+    # to [0, 1] so 0-1 trueness runs and legacy 1-5 runs share an axis).
+    by_method: dict[int, list[float]] = {rid: [] for rid in run_ids}
+    for r in rows:
+        n = _norm01(r["score"], r["score_kind"])
+        if n is not None:
+            by_method[r["run_id"]].append(n)
+    strip = []
+    for rid in method_order:
+        vals = by_method.get(rid) or []
+        if not vals:
+            continue
+        strip.append(f'<span class="vio-cell">'
+                     f'{_runtag(rid, idx_of[rid], base_id, names[rid])} '
+                     f'{_violin_svg(vals)} <span class="muted">'
+                     f'{sum(vals) / len(vals):.2f} &middot; n={len(vals)}</span></span>')
+    summary = ('<div class="vio-strip"><span class="muted">score distribution '
+               'per method (normalized 0-1, amber tick = mean):</span> '
+               + " ".join(strip) + "</div>") if strip else ""
+
     trs = []
     for idx, by_run in ordered:
         methods = [rid for rid in method_order if rid in by_run]
         total = sum(len(by_run[rid]) for rid in methods)
+        # Spec-side item fields come from AVBench itself (transcript with the
+        # context window, the clean verbalizer_prompt); the DB prompt is the
+        # templated injection scaffold. Fall back to DB parsing when the row
+        # can't be resolved (dataset offline / legacy eval_name).
         ctx, vp, correct = _item_fields(by_run[methods[0]])
+        av = _av_row(eval_name, idx)
+        if av:
+            tx_cell = _transcript_html(av)
+            ctx_cell = _context_html(av)
+            vp = av["verbalizer_prompt"] or vp
+            correct = av["correct_response"] or correct
+        else:
+            tx_cell = _long_text(ctx, 400)
+            ctx_cell = _long_text(ctx, 200)
         first_item_row = True
         for rid in methods:
             rollouts = sorted(by_run[rid], key=lambda x: x["mode"])
             cl_id = f"cl_{rid}_{idx}"
+            mvals = [v for v in (_norm01(x["score"], x["score_kind"]) for x in rollouts)
+                     if v is not None]
+            mv_svg = (f'<div>{_violin_svg(mvals, w=72, h=16)}</div>'
+                      if len(mvals) >= 3 else "")
             method_cell = (
                 f'<td rowspan="{len(rollouts)}">'
                 f'{_runtag(rid, idx_of[rid], base_id, names[rid])}'
+                f'{mv_svg}'
                 f'<div style="margin-top:6px">'
                 f'<button class="meta-btn" data-run="{rid}" '
                 f'data-eval="{_e(eval_name)}" data-idx="{idx}" '
@@ -560,17 +921,22 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                 tds = []
                 cls = ' class="item-top"' if first_item_row else ""
                 if first_item_row:
-                    tds.append(f'<td class="pre" rowspan="{total}">'
-                               f'{_long_text(ctx, 400)}</td>')
+                    tds.append(f'<td class="pre" rowspan="{total}">{tx_cell}</td>')
+                    tds.append(f'<td class="pre" rowspan="{total}">{ctx_cell}</td>')
                     tds.append(f'<td class="pre" rowspan="{total}">{_e(vp)}</td>')
                 if first_method_row:
                     tds.append(method_cell)
                 mode_tag = (f' <span class="muted">{_e(ro["mode"])}</span>'
                             if len(rollouts) > 1 else "")
-                just = (f' <details><summary>judge reasoning</summary>'
-                        f'<div class="judge">{_e(ro["judge_justification"])}</div></details>'
+                prec = None
+                if ro["meta_json"]:
+                    prec = json.loads(ro["meta_json"]).get("precision")
+                prec_tag = (f' <span class="pill" title="precision (0-1)">'
+                            f'P {float(prec):.1f}</span>' if prec is not None else "")
+                just = (f'<div class="judge-just">{_e(ro["judge_justification"])}</div>'
                         if ro["judge_justification"] else "")
-                tds.append(f'<td class="pre">{_score_chip(ro["score"])}{mode_tag} '
+                tds.append(f'<td class="pre">{_score_chip(ro["score"], ro["score_kind"])}'
+                           f'{prec_tag}{mode_tag} '
                            f'{_long_text(ro["generation"])}{just}</td>')
                 if first_item_row:
                     tds.append(f'<td class="pre" rowspan="{total}">{_e(correct)}</td>')
@@ -578,15 +944,22 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                 first_item_row = False
                 first_method_row = False
 
-    head = ('<tr><th style="width:24%">context</th>'
-            '<th style="width:16%">verbalizer_prompt</th>'
-            '<th style="width:12%">method</th>'
-            '<th>verbalization(s)</th>'
-            '<th style="width:13%">correct_response</th></tr>')
+    head = ('<tr><th style="width:20%" title="full text fed cold to the '
+            'subject model; the highlighted span is the context whose '
+            'activations are read">transcript <span class="muted">(context '
+            'highlighted)</span></th>'
+            '<th style="width:12%" title="the read window; highlighted = '
+            'context_tokens, the tokens whose activations are injected">'
+            'context <span class="muted">(context_tokens highlighted)</span></th>'
+            '<th style="width:13%">verbalizer_prompt</th>'
+            '<th style="width:10%">method</th>'
+            '<th>verbalization(s) <span class="muted">(judge score &middot; '
+            'judge reasoning in italics)</span></th>'
+            '<th style="width:11%">correct_response</th></tr>')
     note = (f'<p class="muted">{len(ordered)} items &middot; '
             f'{len(run_ids)} methods &middot; ordered by score spread '
             f'(most method disagreement first)</p>')
-    return note + f"<table>{head}{''.join(trs)}</table>" + _CLUSTER_JS
+    return summary + note + f"<table>{head}{''.join(trs)}</table>" + _CLUSTER_JS
 
 
 _CLUSTER_JS = """
