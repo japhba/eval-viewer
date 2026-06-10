@@ -5,6 +5,7 @@ from activation_oracles_dev scripts/eval_viewer.py."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from flask import Blueprint, abort, jsonify, request, send_from_directory
@@ -13,12 +14,6 @@ from . import config
 from .common import Conn, _e, _fmt_num, _fmt_ts, _qs, extract_json, haiku_call
 
 av = Blueprint("av", __name__, url_prefix="/av")
-
-# Per-row meta-judge cache. Keyed on (run_id, eval_name, example_idx). Server
-# process lifetime; cleared on viewer restart. Mirrors the bench
-# cluster_meta_score caching pattern.
-_META_JUDGE_CACHE: dict[tuple, dict] = {}
-
 
 # ---------- DB helper ----------
 def _conn() -> Conn:
@@ -73,19 +68,22 @@ button:hover { background: #f1f5f9; }
 .muted { color: #64748b; font-size: 12px; }
 .pill { display: inline-block; padding: 1px 7px; border-radius: 10px;
         font-size: 11px; background: #e2e8f0; color: #334155; }
-.bar { display: inline-block; height: 10px; background: #93c5fd;
-       border-radius: 2px; vertical-align: middle; }
 code { background: #e2e8f0; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 details summary { cursor: pointer; color: #1d4ed8; font-size: 12px; }
 details[open] summary { color: #334155; margin-bottom: 4px; }
 .score-1, .score-2 { background: #fee2e2; }
 .score-3 { background: #fef3c7; }
 .score-4, .score-5 { background: #dcfce7; }
-.dpos { color: #16a34a; font-weight: 600; }
-.dneg { color: #dc2626; font-weight: 600; }
 .runtag { display: inline-block; padding: 2px 8px; border-radius: 3px;
           font-size: 11px; font-weight: 600; color: #fff; }
-.grp td { background: #e2e8f0; font-weight: 600; }
+.cmp-box { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 12px 8px;
+           margin: 0 0 10px; width: 100%; min-width: 0; background: #fff; }
+.cmp-box legend { font-size: 12px; color: #64748b; padding: 0 6px; }
+.cmp-grid { display: grid; gap: 1px 18px;
+            grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
+.cmp-run { display: block; font-size: 13px; white-space: nowrap;
+           overflow: hidden; text-overflow: ellipsis; }
+tr.item-top td { border-top: 2px solid #94a3b8; }
 .judge { background: #fff7ed; border-left: 3px solid #f59e0b; padding: 4px 8px;
          font-size: 12px; white-space: pre-wrap; word-break: break-word;
          font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -121,9 +119,9 @@ details[open] summary { color: #334155; margin-bottom: 4px; }
   .score-1, .score-2 { background: #3b1416; }
   .score-3 { background: #2a2113; }
   .score-4, .score-5 { background: #14302a; }
-  .dpos { color: #4ade80; }
-  .dneg { color: #f87171; }
-  .grp td { background: #20242c; }
+  tr.item-top td { border-top-color: #475569; }
+  .cmp-box { background: #1a1d23; border-color: #374151; }
+  .cmp-box legend { color: #94a3b8; }
   .judge { background: #2a2113; color: #fde68a; }
   .meta-btn { background: #1e1b4b; color: #a5b4fc; }
   .meta-btn:hover { background: #312e81; }
@@ -152,7 +150,7 @@ def _page(title: str, body: str) -> str:
   <nav>
     <a href="/">AO bench</a><a href="/predictions">Predictions</a><a href="/agents">Agents</a>
     <span class="navsep">|</span>
-    <a href="/av/" class="here">AV runs</a><a href="/av/compare">Compare</a><a href="/av/matrix">AV matrix</a>{att}
+    <a href="/av/" class="here">AV runs</a><a href="/av/compare">Compare</a>{att}
   </nav>
   <span class="dbinfo">db: {_e(config.av_db_url)}{gate}</span>
 </header>
@@ -175,13 +173,7 @@ def overview():
     try:
         runs = db.query("""
             SELECT r.run_id, r.run_key, r.checkpoint, r.model_name, r.source,
-                   r.step, r.examples_seen, r.label, r.created_at,
-                   (SELECT count(*) FROM recog_examples e WHERE e.run_id = r.run_id)
-                       AS n_recog,
-                   (SELECT count(*) FROM open_ended_examples o WHERE o.run_id = r.run_id)
-                       AS n_open,
-                   (SELECT count(*) FROM metrics m WHERE m.run_id = r.run_id)
-                       AS n_metrics
+                   r.step, r.examples_seen, r.label, r.created_at
             FROM eval_runs r
             ORDER BY r.created_at DESC
         """)
@@ -254,9 +246,6 @@ def overview():
           <td>{_e(r['model_name'])}</td>
           <td>{_e(r['label'])}</td>
           <td>{_e(_fmt_ts(r['created_at']))}</td>
-          <td class="num"><a href="/av/run/{r['run_id']}/recog">{r['n_recog']}</a></td>
-          <td class="num"><a href="/av/run/{r['run_id']}/open_ended">{r['n_open']}</a></td>
-          <td class="num"><a href="/av/run/{r['run_id']}">{r['n_metrics']}</a></td>
           <td><a href="/av/compare?runs={r['run_id']}">cmp</a></td>
         </tr>""")
 
@@ -264,7 +253,7 @@ def overview():
         table = f"""<table>
           <tr><th>run_id</th><th>checkpoint</th><th>source</th><th>step</th>
               <th>examples_seen</th><th>model</th><th>label</th><th>created (UTC)</th>
-              <th>#recog</th><th>#open_ended</th><th>#metrics</th><th>cmp</th></tr>
+              <th>cmp</th></tr>
           {''.join(trs)}
         </table>"""
     else:
@@ -287,12 +276,6 @@ def run_detail(run_id: int):
         metrics = db.query(
             "SELECT metric_key, value FROM metrics WHERE run_id = %s "
             "ORDER BY metric_key", (run_id,))
-        n_recog = db.query(
-            "SELECT count(*) AS c FROM recog_examples WHERE run_id = %s",
-            (run_id,))[0]["c"]
-        n_open = db.query(
-            "SELECT count(*) AS c FROM open_ended_examples WHERE run_id = %s",
-            (run_id,))[0]["c"]
     finally:
         db.close()
 
@@ -310,8 +293,6 @@ def run_detail(run_id: int):
     </table>"""
 
     links = (f'<div class="controls">'
-             f'<a href="/av/run/{run_id}/recog">recog examples ({n_recog})</a>'
-             f'<a href="/av/run/{run_id}/open_ended">open-ended examples ({n_open})</a>'
              f'<a href="/av/compare?runs={run_id}">compare against other runs / baselines &rarr;</a>'
              f'</div>')
 
@@ -332,428 +313,7 @@ def run_detail(run_id: int):
 
 
 # ============================================================
-#  Route 3: one run — recog examples
-# ============================================================
-@av.route("/run/<int:run_id>/recog")
-def run_recog(run_id: int):
-    db = _conn()
-    try:
-        runs = db.query("SELECT * FROM eval_runs WHERE run_id = %s", (run_id,))
-        if not runs:
-            abort(404)
-        run = runs[0]
-        suites = [r["suite"] for r in db.query(
-            "SELECT DISTINCT suite FROM recog_examples WHERE run_id = %s "
-            "ORDER BY suite", (run_id,))]
-        tasks = [r["task"] for r in db.query(
-            "SELECT DISTINCT task FROM recog_examples WHERE run_id = %s "
-            "ORDER BY task", (run_id,))]
-        tiers = [r["tier"] for r in db.query(
-            "SELECT DISTINCT tier FROM recog_examples WHERE run_id = %s "
-            "ORDER BY tier", (run_id,))]
-
-        sel_suite = request.args.get("suite", "")
-        sel_task = request.args.get("task", "")
-        sel_tier = request.args.get("tier", "")
-
-        where = ["run_id = %s"]
-        params: list = [run_id]
-        if sel_suite:
-            where.append("suite = %s")
-            params.append(sel_suite)
-        if sel_task:
-            where.append("task = %s")
-            params.append(sel_task)
-        if sel_tier:
-            where.append("tier = %s")
-            params.append(sel_tier)
-        clause = " AND ".join(where)
-
-        rows = db.query(
-            f"SELECT suite, task, tier, example_idx, entry_id, p_correct, "
-            f"neg_log_p, logp_a, logp_b, correct_response, "
-            f"incorrect_plausible_response "
-            f"FROM recog_examples WHERE {clause} "
-            f"ORDER BY suite, task, tier, example_idx LIMIT 2000", tuple(params))
-        agg = db.query(
-            f"SELECT count(*) AS n, avg(p_correct) AS mp, avg(neg_log_p) AS mnlp "
-            f"FROM recog_examples WHERE {clause}", tuple(params))[0]
-    finally:
-        db.close()
-
-    def _sel(name, values, cur):
-        opts = [f'<option value="">(all {name})</option>']
-        for v in values:
-            s = " selected" if v == cur else ""
-            opts.append(f'<option value="{_e(v)}"{s}>{_e(v)}</option>')
-        return (f'<label>{name}: <select name="{name}" '
-                f'onchange="this.form.submit()">{"".join(opts)}</select></label>')
-
-    controls = f"""
-    <div class="controls">
-      <form method="get">
-        {_sel("suite", suites, sel_suite)}
-        {_sel("task", tasks, sel_task)}
-        {_sel("tier", tiers, sel_tier)}
-        <noscript><button type="submit">Filter</button></noscript>
-      </form>
-      <span class="muted">{agg['n']} example(s)
-        &middot; mean p_correct {_fmt_num(agg['mp'])}
-        &middot; mean neg_log_p {_fmt_num(agg['mnlp'])}</span>
-    </div>"""
-
-    if not rows:
-        table = _empty("No recog examples for this run / filter. "
-                       "(Per-example backfill may not be done yet.)")
-    else:
-        trs = []
-        for r in rows:
-            p = r["p_correct"]
-            barw = int(round(max(0.0, min(1.0, float(p))) * 80)) if p is not None else 0
-            trs.append(f"""<tr>
-              <td>{_e(r['suite'])}</td>
-              <td>{_e(r['task'])}</td>
-              <td><span class="pill">{_e(r['tier'])}</span></td>
-              <td class="num">{_e(r['example_idx'])}</td>
-              <td>{_e(r['entry_id'])}</td>
-              <td class="num">{_fmt_num(p)}
-                <span class="bar" style="width:{barw}px"></span></td>
-              <td class="num">{_fmt_num(r['neg_log_p'])}</td>
-              <td class="num">{_fmt_num(r['logp_a'])}</td>
-              <td class="num">{_fmt_num(r['logp_b'])}</td>
-              <td class="pre">{_e(r['correct_response'])}</td>
-              <td class="pre">{_e(r['incorrect_plausible_response'])}</td>
-            </tr>""")
-        cap = ('<p class="muted">Showing first 2000 rows.</p>'
-               if len(rows) == 2000 else "")
-        table = f"""{cap}<table>
-          <tr><th>suite</th><th>task</th><th>tier</th><th>idx</th><th>entry_id</th>
-              <th>p_correct</th><th>neg_log_p</th><th>logp_a</th><th>logp_b</th>
-              <th>correct_response</th><th>incorrect_plausible_response</th></tr>
-          {''.join(trs)}
-        </table>"""
-
-    body = (f'<h2>Run {run_id} recog &mdash; {_e(run["checkpoint"])}</h2>'
-            f'<p class="muted"><a href="/av/run/{run_id}">&larr; back to run</a></p>'
-            f'{controls}{table}')
-    return _page(f"Run {run_id} recog", body)
-
-
-# ============================================================
-#  Route 4: one run — open-ended examples
-# ============================================================
-_SCORE_BUCKETS = {
-    "": ("", None, None),  # all
-    "fail": ("fail (≤2)", 0, 2),
-    "mid": ("mid (=3)", 3, 3),
-    "pass": ("pass (≥4)", 4, 5),
-}
-_SORT_OPTS = {
-    "": "default (eval, idx)",
-    "score_asc": "score ↑ (failures first)",
-    "score_desc": "score ↓ (best first)",
-}
-
-
-@av.route("/run/<int:run_id>/open_ended")
-def run_open_ended(run_id: int):
-    db = _conn()
-    try:
-        runs = db.query("SELECT * FROM eval_runs WHERE run_id = %s", (run_id,))
-        if not runs:
-            abort(404)
-        run = runs[0]
-        eval_names = [r["eval_name"] for r in db.query(
-            "SELECT DISTINCT eval_name FROM open_ended_examples WHERE run_id = %s "
-            "ORDER BY eval_name", (run_id,))]
-        modes = [r["mode"] for r in db.query(
-            "SELECT DISTINCT mode FROM open_ended_examples WHERE run_id = %s "
-            "ORDER BY mode", (run_id,))]
-
-        sel_eval = request.args.get("eval_name", "")
-        sel_mode = request.args.get("mode", "")
-        sel_bucket = request.args.get("bucket", "")
-        sel_sort = request.args.get("sort", "")
-        if sel_bucket not in _SCORE_BUCKETS:
-            sel_bucket = ""
-        if sel_sort not in _SORT_OPTS:
-            sel_sort = ""
-
-        where = ["run_id = %s"]
-        params: list = [run_id]
-        if sel_eval:
-            where.append("eval_name = %s"); params.append(sel_eval)
-        if sel_mode:
-            where.append("mode = %s"); params.append(sel_mode)
-        _, lo, hi = _SCORE_BUCKETS[sel_bucket]
-        if lo is not None:
-            where.append("score >= %s"); params.append(lo)
-        if hi is not None:
-            where.append("score <= %s"); params.append(hi)
-        clause = " AND ".join(where)
-
-        order = "ORDER BY eval_name, mode, example_idx"
-        if sel_sort == "score_asc":
-            order = "ORDER BY score ASC NULLS FIRST, eval_name, example_idx"
-        elif sel_sort == "score_desc":
-            order = "ORDER BY score DESC NULLS LAST, eval_name, example_idx"
-
-        rows = db.query(
-            f"SELECT eval_name, mode, example_idx, prompt, generation, target, "
-            f"score, score_kind, judge_justification, meta_json "
-            f"FROM open_ended_examples WHERE {clause} "
-            f"{order} LIMIT 1000", tuple(params))
-        agg = db.query(
-            f"SELECT count(*) AS n, avg(score) AS ms, "
-            f"sum(CASE WHEN score <= 2 THEN 1 ELSE 0 END) AS n_fail, "
-            f"sum(CASE WHEN score = 3 THEN 1 ELSE 0 END) AS n_mid, "
-            f"sum(CASE WHEN score >= 4 THEN 1 ELSE 0 END) AS n_pass "
-            f"FROM open_ended_examples WHERE {clause}", tuple(params))[0]
-    finally:
-        db.close()
-
-    def _sel(name, label, values, cur):
-        opts = [f'<option value="">(all {label})</option>']
-        for v in values:
-            s = " selected" if v == cur else ""
-            shown = v if v != "" else "(none)"
-            opts.append(f'<option value="{_e(v)}"{s}>{_e(shown)}</option>')
-        return (f'<label>{label}: <select name="{name}" '
-                f'onchange="this.form.submit()">{"".join(opts)}</select></label>')
-
-    def _sel_kv(name, label, kv_pairs, cur):
-        opts = []
-        for v, txt in kv_pairs:
-            s = " selected" if v == cur else ""
-            opts.append(f'<option value="{_e(v)}"{s}>{_e(txt or "(all)")}</option>')
-        return (f'<label>{label}: <select name="{name}" '
-                f'onchange="this.form.submit()">{"".join(opts)}</select></label>')
-
-    bucket_pairs = [(k, v[0] or "(all scores)") for k, v in _SCORE_BUCKETS.items()]
-    sort_pairs = list(_SORT_OPTS.items())
-
-    fail_pct = (100.0 * (agg['n_fail'] or 0) / agg['n']) if agg['n'] else 0.0
-    controls = f"""
-    <div class="controls">
-      <form method="get">
-        {_sel("eval_name", "eval_name", eval_names, sel_eval)}
-        {_sel("mode", "mode", modes, sel_mode)}
-        {_sel_kv("bucket", "judge bucket", bucket_pairs, sel_bucket)}
-        {_sel_kv("sort", "sort", sort_pairs, sel_sort)}
-        <noscript><button type="submit">Filter</button></noscript>
-      </form>
-      <span class="muted">{agg['n']} example(s)
-        &middot; mean correctness {_fmt_num(agg['ms'])}
-        &middot; <strong>{agg['n_fail'] or 0} fail (≤2, {fail_pct:.0f}%)</strong>
-        &middot; {agg['n_mid'] or 0} mid &middot; {agg['n_pass'] or 0} pass (≥4)
-      </span>
-    </div>"""
-
-    if not rows:
-        table = _empty("No open-ended examples for this run / filter.")
-    else:
-        trs = []
-        for r in rows:
-            mode = r["mode"] if r["mode"] else "(none)"
-            score = r["score"]
-            score_cls = ""
-            if score is not None:
-                score_cls = f"score-{int(round(score))}"
-            # Pull specificity out of meta_json if present.
-            spec = ""
-            try:
-                meta = json.loads(r.get("meta_json") or "{}")
-                if isinstance(meta, dict) and meta.get("specificity") is not None:
-                    spec = _fmt_num(meta["specificity"])
-            except Exception:
-                pass
-            gen = r["generation"] or ""
-            gen_short = gen if len(gen) <= 200 else gen[:200] + "…"
-            tgt = r["target"] or ""
-            tgt_short = tgt if len(tgt) <= 200 else tgt[:200] + "…"
-            prompt = r["prompt"] or ""
-
-            meta_id = f"meta_{r['example_idx']}_{r['eval_name'].replace('.','_')}"
-            trs.append(f"""<tr class="{score_cls}">
-              <td>{_e(r['eval_name'])}</td>
-              <td class="num">{_e(r['example_idx'])}</td>
-              <td class="num"><strong>{_fmt_num(r['score'])}</strong></td>
-              <td class="num">{spec}</td>
-              <td class="pre">{_e(gen_short)}{(
-                  '<details><summary>full generation</summary>'
-                  f'<div class="pre">{_e(gen)}</div></details>'
-                  ) if len(gen) > 200 else ''}</td>
-              <td class="pre">{_e(tgt_short)}{(
-                  '<details><summary>full target</summary>'
-                  f'<div class="pre">{_e(tgt)}</div></details>'
-                  ) if len(tgt) > 200 else ''}</td>
-              <td><details><summary>judge reasoning</summary>
-                  <div class="judge">{_e(r['judge_justification'] or '(none)')}</div>
-                  </details>
-                  <div style="margin-top:6px">
-                    <button class="meta-btn" data-run="{run_id}"
-                            data-eval="{_e(r['eval_name'])}"
-                            data-idx="{_e(r['example_idx'])}"
-                            data-target="{meta_id}">🔍 meta-judge (Haiku 4.5)</button>
-                    <div id="{meta_id}" class="meta-out"></div>
-                  </div>
-              </td>
-              <td><details><summary>prompt</summary>
-                  <div class="pre">{_e(prompt)}</div></details></td>
-            </tr>""")
-        cap = ('<p class="muted">Showing first 1000 rows.</p>'
-               if len(rows) == 1000 else "")
-        table = f"""{cap}<table>
-          <tr><th>eval_name</th><th>idx</th><th>corr</th><th>spec</th>
-              <th>generation</th><th>target</th>
-              <th>judge reasoning &amp; meta</th><th>prompt</th></tr>
-          {''.join(trs)}
-        </table>
-        <script>
-        (function() {{
-          // One-at-a-time meta-judge fetch (CLAUDE.md: no Anthropic concurrency).
-          let META_BUSY = false;
-          document.querySelectorAll('button.meta-btn').forEach((btn) => {{
-            btn.addEventListener('click', async () => {{
-              if (META_BUSY) {{ alert('A meta-judge call is already in flight.'); return; }}
-              const tgt = document.getElementById(btn.dataset.target);
-              if (!tgt) return;
-              if (tgt.dataset.loaded === '1') {{
-                tgt.style.display = (tgt.style.display === 'none' ? 'block' : 'none');
-                return;
-              }}
-              META_BUSY = true;
-              btn.disabled = true; btn.textContent = '⏳ haiku thinking…';
-              tgt.style.display = 'block';
-              tgt.innerHTML = '<span class="muted">loading…</span>';
-              try {{
-                const sp = new URLSearchParams({{
-                  run_id: btn.dataset.run,
-                  eval_name: btn.dataset.eval,
-                  example_idx: btn.dataset.idx,
-                }});
-                const r = await fetch('/av/api/oe_meta_score?' + sp.toString());
-                const j = await r.json();
-                if (j.error) {{
-                  tgt.innerHTML = '<span style="color:#dc2626">err: ' + j.error + '</span>';
-                }} else {{
-                  const ms = j.meta_score == null ? '?' : j.meta_score;
-                  const ps = j.primary_score == null ? '?' : j.primary_score;
-                  const agree = j.agree == null ? '?' : (j.agree ? '✓ agree' : '✗ disagree');
-                  const cls = (j.meta_score == null) ? '' :
-                              (j.meta_score <= 2 ? 'score-1' :
-                               j.meta_score == 3 ? 'score-3' : 'score-5');
-                  tgt.innerHTML =
-                    '<div class="meta-card ' + cls + '">' +
-                    '<strong>meta=' + ms + '</strong> · primary=' + ps + ' · ' + agree +
-                    '<div class="meta-just">' + (j.meta_justification || '') + '</div>' +
-                    '</div>';
-                }}
-                tgt.dataset.loaded = '1';
-              }} catch (e) {{
-                tgt.innerHTML = '<span style="color:#dc2626">fetch err: ' + e + '</span>';
-              }} finally {{
-                META_BUSY = false;
-                btn.disabled = false; btn.textContent = '🔍 meta-judge (Haiku 4.5)';
-              }}
-            }});
-          }});
-        }})();
-        </script>"""
-
-    body = (f'<h2>Run {run_id} open-ended &mdash; {_e(run["checkpoint"])}</h2>'
-            f'<p class="muted"><a href="/av/run/{run_id}">&larr; back to run</a></p>'
-            f'{controls}{table}')
-    return _page(f"Run {run_id} open-ended", body)
-
-
-# ============================================================
-#  Route 4b: per-row meta-judge (Anthropic Haiku 4.5 second opinion)
-# ============================================================
-_META_SYSTEM = (
-    "You are a meta-judge auditing an automated grader for an activation "
-    "oracle (AO) eval. Given QUESTION asked of the AO, its AO_RESPONSE, "
-    "the GROUND_TRUTH, and the PRIMARY JUDGE's score (1=worst, 5=best) "
-    "+ short reasoning, produce a TERSE second-opinion JSON:\n"
-    "  meta_score (1-5 int) — your own correctness call.\n"
-    "  agree (true/false) — within ±1 of the primary score?\n"
-    "  meta_justification — 2-4 short markdown bullets (`- ...\\n- ...`), "
-    "each ≤12 words. Cover: (a) what the AO actually conveyed vs GT, "
-    "(b) the most informative failure mode if any, "
-    "(c) brief stance on the primary judge.\n"
-    "Respond as JSON: "
-    '{"meta_score": <1-5>, "agree": <bool>, "meta_justification": "- ..."}'
-)
-
-
-@av.route("/api/oe_meta_score")
-def api_oe_meta_score():
-    """On-demand Anthropic Haiku 4.5 second-opinion meta-judge for one row.
-
-    Per CLAUDE.md no-Anthropic-concurrency rule, this fires one call per
-    request — the UI button is sequential by user click, not auto-fanned out.
-    Caches in-process so repeat clicks return instantly."""
-    run_id = request.args.get("run_id", type=int)
-    eval_name = request.args.get("eval_name")
-    example_idx = request.args.get("example_idx", type=int)
-    if run_id is None or not eval_name or example_idx is None:
-        return jsonify({"error": "run_id, eval_name, example_idx required"}), 400
-
-    key = (run_id, eval_name, example_idx)
-    if key in _META_JUDGE_CACHE:
-        return jsonify(_META_JUDGE_CACHE[key])
-
-    db = _conn()
-    try:
-        rows = db.query(
-            "SELECT prompt, generation, target, score, score_kind, "
-            "judge_justification, meta_json "
-            "FROM open_ended_examples "
-            "WHERE run_id=%s AND eval_name=%s AND example_idx=%s LIMIT 1",
-            (run_id, eval_name, example_idx))
-    finally:
-        db.close()
-    if not rows:
-        return jsonify({"error": "row not found"}), 404
-    r = rows[0]
-
-    user_text = (
-        f"QUESTION:\n{(r['prompt'] or '')[:3000]}\n\n"
-        f"AO_RESPONSE:\n{(r['generation'] or '')[:3000]}\n\n"
-        f"GROUND_TRUTH:\n{(r['target'] or '')[:3000]}\n\n"
-        f"PRIMARY JUDGE score ({r['score_kind'] or 'unknown_kind'}): "
-        f"{r['score'] if r['score'] is not None else '(none)'}\n"
-        f"PRIMARY JUDGE reasoning: {(r['judge_justification'] or '(none)')[:1500]}\n"
-    )
-    try:
-        text, usage = haiku_call(_META_SYSTEM, user_text, max_tokens=600)
-        meta_score = None; agree = None; meta_just = text.strip()
-        obj = extract_json(text)
-        if obj:
-            try:
-                if obj.get("meta_score") is not None:
-                    meta_score = int(obj["meta_score"])
-                if obj.get("agree") is not None:
-                    agree = bool(obj["agree"])
-            except (ValueError, TypeError):
-                meta_score = None; agree = None
-            if obj.get("meta_justification"):
-                meta_just = str(obj["meta_justification"])
-        out = {
-            "meta_score": meta_score, "agree": agree,
-            "meta_justification": meta_just,
-            "primary_score": r["score"],
-            "input_tokens": getattr(usage, "input_tokens", None),
-            "output_tokens": getattr(usage, "output_tokens", None),
-        }
-        _META_JUDGE_CACHE[key] = out
-        return jsonify(out)
-    except Exception as exc:
-        return jsonify({"error": f"haiku call failed: {exc}"}), 500
-
-
-# ============================================================
-#  Route 4c: compare runs (N runs, deltas vs a designated baseline)
+#  Route 3: compare runs — one macro-row per eval item
 # ============================================================
 # Reference/baseline runs — the published Adam Karvonen verbalizers and the
 # nanoNLA full fine-tune that the comparison evals (avbench_recog_violin,
@@ -764,58 +324,108 @@ _BASELINE_SQL = (r"(label ILIKE '%%ref\_%%' OR label ILIKE '%%nanonla%%' "
                  r"OR checkpoint ILIKE '%%adamkarvonen%%' "
                  r"OR checkpoint ILIKE '%%nanonla%%')")
 
-# Movers drill-down (exactly-two-runs mode) shared-example join keys: recog
-# rows match on (suite, task, tier, entry) where entry prefers the stable
-# entry_id over the per-run sampling index; open-ended rows match on
-# (eval_name, mode, example_idx).
-_RECOG_JOIN = (
-    "JOIN recog_examples b ON b.run_id = %s "
-    "AND b.suite = a.suite AND b.task = a.task AND b.tier = a.tier "
-    "AND COALESCE(b.entry_id, b.example_idx::text) = "
-    "    COALESCE(a.entry_id, a.example_idx::text)")
-_OE_JOIN = (
-    "JOIN open_ended_examples b ON b.run_id = %s "
-    "AND b.eval_name = a.eval_name AND b.mode = a.mode "
-    "AND b.example_idx = a.example_idx")
+
+def _short_ckpt(ckpt: str) -> str:
+    """Human name for a checkpoint: HF-cache snapshot paths collapse to
+    `org/repo`, local ao_checkpoints paths to `<run>/<step>`, anything else
+    to its last two path components. Runs are identified by THIS everywhere
+    in the compare UI — run_ids are kept only as tooltips/links."""
+    m = re.search(r"models--([^/]+)--([^/]+)", ckpt)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"
+    parts = [p for p in ckpt.split("/") if p]
+    if "ao_checkpoints" in parts:
+        return "/".join(parts[parts.index("ao_checkpoints") + 1:]) or ckpt
+    return ckpt if len(parts) <= 2 else "/".join(parts[-2:])
 
 
-def _fmt_delta(d, digits: int = 3) -> str:
-    if d is None:
-        return ""
-    d = float(d)
-    cls = "dpos" if d > 1e-9 else ("dneg" if d < -1e-9 else "")
-    return f'<span class="{cls}">{d:+.{digits}f}</span>'
-
-
-def _runtag(run_id: int, idx: int, base_id: int) -> str:
-    """Colored chip identifying a run; the baseline gets a neutral chip."""
+def _runtag(run_id: int, idx: int, base_id: int, name: str | None = None) -> str:
+    """Colored chip identifying a run by its checkpoint name; the baseline
+    gets a neutral chip. The run_id lives in the tooltip."""
+    txt = _e(name) if name else f"#{run_id}"
     if run_id == base_id:
-        return f'<span class="runtag" style="background:#475569">#{run_id} base</span>'
-    return (f'<span class="runtag" style="background:hsl({(idx * 67) % 360},55%,42%)">'
-            f'#{run_id}</span>')
+        return (f'<span class="runtag" style="background:#475569" '
+                f'title="run #{run_id} (baseline)">{txt} &middot; base</span>')
+    return (f'<span class="runtag" style="background:hsl({(idx * 67) % 360},55%,42%)" '
+            f'title="run #{run_id}">{txt}</span>')
 
 
-def _run_option(r, selected_ids) -> str:
-    sel = " selected" if r["run_id"] in selected_ids else ""
-    base = " [baseline]" if r["is_baseline"] else ""
-    label = r["label"] or r["checkpoint"]
-    return (f'<option value="{r["run_id"]}"{sel}>'
-            f'#{r["run_id"]} &middot; {_e(label)} ({_e(r["source"])})'
-            f'{base}</option>')
+def _run_checkbox(r, selected_ids) -> str:
+    ck = " checked" if r["run_id"] in selected_ids else ""
+    return (f'<label class="cmp-run"><input type="checkbox" name="runs" '
+            f'value="{r["run_id"]}"{ck}> {_e(_short_ckpt(r["checkpoint"]))} '
+            f'<span class="muted">#{r["run_id"]} &middot; '
+            f'{_e(_fmt_ts(r["created_at"]))}</span></label>')
+
+
+_CLUSTER_SCORE_CACHE: dict[tuple, dict] = {}
+
+_CLUSTER_SYSTEM = (
+    "You score a CLUSTER of verbalizations from an activation-verbalizer "
+    "eval: one method's answer(s) to one question, possibly sampled several "
+    "times. Given the QUESTION, the CORRECT_RESPONSE, and the rollouts (each "
+    "with its primary judge score, 1=worst..5=best), respond with JSON: "
+    '{"cluster_score": <1-5 int>, "digest": "- ...\\n- ..."} where '
+    "cluster_score judges how well the cluster AS A WHOLE captures "
+    "CORRECT_RESPONSE (consistency across rollouts counts; confident "
+    "hallucinations disqualify) and digest is 2-4 terse markdown bullets, "
+    "each <=12 words, summarizing what the method conveyed and the most "
+    "informative failure mode if any."
+)
+
+
+def _item_fields(rows: list[dict]) -> tuple[str, str, str]:
+    """(context, verbalizer_prompt, correct_response) for one item. Prefers
+    the meta_json keys persisted by the eval writer; for older rows falls
+    back to parsing the rendered prompt (chat scaffold, the Layer header and
+    `?` injection-placeholder lines stripped)."""
+    ctx = vp = ""
+    for r in rows:
+        meta = json.loads(r["meta_json"] or "{}")
+        ctx = ctx or (meta.get("context") or "")
+        vp = vp or (meta.get("verbalizer_prompt") or "")
+        if ctx and vp:
+            break
+    if not vp:
+        parts = []
+        for ln in (rows[0]["prompt"] or "").splitlines():
+            s = ln.strip()
+            if (not s or s in ("user", "assistant", "<think>", "</think>")
+                    or s.startswith("Layer:") or set(s) <= {"?", " "}):
+                continue
+            parts.append(s)
+        vp = " ".join(parts)
+    if not ctx:
+        ctx = "(not recorded — rerun the eval to persist context)"
+    return ctx, vp, rows[0]["target"] or ""
+
+
+def _score_chip(score) -> str:
+    """Color-coded judge-score chip (1-5) prefacing a verbalization."""
+    if score is None:
+        return '<span class="pill">unscored</span>'
+    s = min(5, max(1, int(round(float(score)))))
+    return f'<span class="pill score-{s}">{_fmt_num(score, 2)}</span>'
+
+
+def _long_text(text: str, head: int = 300) -> str:
+    """Head shown inline, the FULL text expandable — never truncated away."""
+    text = text or ""
+    if len(text) <= head:
+        return _e(text)
+    return (f'{_e(text[:head])}&hellip; <details><summary>full text</summary>'
+            f'<div class="pre">{_e(text)}</div></details>')
 
 
 @av.route("/compare")
 def compare():
-    # ?runs= repeats and/or comma-joins; ?base= designates the delta reference
-    # (auto: first baseline among the selection, else the first selected).
+    # ?runs= (repeat / comma-joined) selects the methods; ?eval= picks the
+    # eval_name; ?all=1 unhides historical runs in the picker.
     run_ids: list[int] = []
     for v in request.args.getlist("runs"):
         for tok in v.split(","):
             if tok.strip().isdigit() and int(tok) not in run_ids:
                 run_ids.append(int(tok))
-    base_id = request.args.get("base", type=int)
-    if base_id and base_id not in run_ids:
-        run_ids.append(base_id)
 
     db = _conn()
     try:
@@ -828,334 +438,262 @@ def compare():
         by_id = {r["run_id"]: r for r in runs_all}
         selected = [by_id[i] for i in run_ids if i in by_id]
         run_ids = [r["run_id"] for r in selected]
-        if base_id not in run_ids:
-            base_id = None
-        if base_id is None and selected:
-            base_id = next((r["run_id"] for r in selected if r["is_baseline"]),
-                           selected[0]["run_id"])
+        # Baseline = neutral chip + first sub-row of each item; no extra UI.
+        base_id = next((r["run_id"] for r in selected if r["is_baseline"]),
+                       run_ids[0] if run_ids else None)
 
+        sel_eval = request.args.get("eval") or ""
+        eval_names: list[str] = []
         sections = ""
         if len(selected) >= 2:
             ph = ",".join(["%s"] * len(run_ids))
-            mets = db.query(
-                f"SELECT run_id, metric_key, value FROM metrics "
-                f"WHERE run_id IN ({ph})", tuple(run_ids))
-            recog = db.query(
-                f"SELECT run_id, suite, task, tier, "
-                f"COALESCE(entry_id, example_idx::text) AS entry, p_correct "
-                f"FROM recog_examples WHERE run_id IN ({ph})", tuple(run_ids))
-            oe = db.query(
-                f"SELECT run_id, eval_name, mode, example_idx, score "
-                f"FROM open_ended_examples WHERE run_id IN ({ph})",
-                tuple(run_ids))
-            movers_html = ""
-            if len(selected) == 2:
-                a_id = next(i for i in run_ids if i != base_id)
-                movers_html = _render_movers(db, a_id, base_id)
-            sections = _render_compare_sections(
-                selected, run_ids, base_id, mets, recog, oe, movers_html)
+            eval_names = [r["eval_name"] for r in db.query(
+                f"SELECT DISTINCT eval_name FROM open_ended_examples "
+                f"WHERE run_id IN ({ph}) ORDER BY eval_name", tuple(run_ids))]
+            if sel_eval not in eval_names:
+                sel_eval = eval_names[0] if eval_names else ""
+            if sel_eval:
+                rows = db.query(
+                    f"SELECT run_id, eval_name, mode, example_idx, prompt, "
+                    f"generation, target, score, judge_justification, meta_json "
+                    f"FROM open_ended_examples "
+                    f"WHERE run_id IN ({ph}) AND eval_name = %s "
+                    f"ORDER BY example_idx, run_id, mode",
+                    tuple(run_ids) + (sel_eval,))
+                sections = _render_items(selected, run_ids, base_id, rows)
+            else:
+                sections = _empty("The selected runs have no open-ended rows.")
     finally:
         db.close()
 
-    base_opts = "".join(_run_option(r, run_ids) for r in runs_all if r["is_baseline"])
-    other_opts = "".join(_run_option(r, run_ids) for r in runs_all if not r["is_baseline"])
-    bsel_opts = "".join(
-        f'<option value="{r["run_id"]}"{" selected" if r["run_id"] == base_id else ""}>'
-        f'#{r["run_id"]} &middot; {_e(r["label"] or r["checkpoint"])}</option>'
-        for r in selected)
-    size = min(14, max(4, len(runs_all)))
+    # Checkbox picker (baselines fully listed; other runs capped to the most
+    # recent unless ?all=1 — the DB holds 1000+ historical runs). Selected
+    # runs are always listed.
+    show_all = request.args.get("all", "0") == "1"
+    cap = None if show_all else 40
+    base_runs = [r for r in runs_all if r["is_baseline"]]
+    other_runs = [r for r in runs_all if not r["is_baseline"]]
+    listed_other = other_runs if cap is None else (
+        other_runs[:cap] + [r for r in other_runs[cap:] if r["run_id"] in run_ids])
+    base_boxes = "".join(_run_checkbox(r, run_ids) for r in base_runs)
+    other_boxes = "".join(_run_checkbox(r, run_ids) for r in listed_other)
+    more = ("" if cap is None or len(other_runs) <= cap else
+            f'<a class="muted" href="/av/compare?all=1'
+            f'{"&runs=" + ",".join(map(str, run_ids)) if run_ids else ""}'
+            f'{"&eval=" + sel_eval if sel_eval else ""}">'
+            f'show all {len(other_runs)} runs &rarr;</a>')
+    eval_opts = "".join(
+        f'<option value="{_e(en)}"{" selected" if en == sel_eval else ""}>{_e(en)}</option>'
+        for en in eval_names)
+    eval_sel = (f'<label>eval: <select name="eval">{eval_opts}</select></label>'
+                if eval_names else "")
+    hidden_all = '<input type="hidden" name="all" value="1">' if show_all else ""
     picker = f"""
     <div class="controls">
-      <form method="get">
-        <label style="vertical-align:top">runs (ctrl/cmd-click for several):<br>
-          <select name="runs" multiple size="{size}">
-            <optgroup label="baselines / references">{base_opts}</optgroup>
-            <optgroup label="runs">{other_opts}</optgroup>
-          </select></label>
-        <label>&Delta; baseline:<br>
-          <select name="base">
-            <option value="">(auto: first baseline selected)</option>
-            {bsel_opts}
-          </select></label>
+      <form method="get" style="display:block; width:100%">
+        {hidden_all}
+        <fieldset class="cmp-box"><legend>baselines / references</legend>
+          <div class="cmp-grid">{base_boxes}</div></fieldset>
+        <fieldset class="cmp-box"><legend>runs {more}</legend>
+          <div class="cmp-grid">{other_boxes}</div></fieldset>
+        {eval_sel}
         <button type="submit">Compare</button>
       </form>
     </div>"""
 
     if len(selected) < 2:
-        body = picker + _empty(
-            "Select two or more runs to compare (baselines are grouped at "
-            "the top; deltas are taken against the designated baseline).")
+        body = picker + _empty("Tick two or more runs (methods) to compare "
+                               "their verbalizations item by item.")
     else:
         body = picker + sections
     return _page("Compare runs", f"<h2>Compare runs</h2>{body}")
 
 
-def _grouped_table(selected, run_ids, base_id, per_group, value_hdr,
-                   bar_scale, digits=4):
-    """Render macro-row groups: a shaded header per group, then one sub-row
-    per run with mean value + delta vs the baseline run. `per_group` maps
-    group key -> {run_id -> {entry -> value}}; within a group only entries
-    covered by EVERY run that has the group are compared."""
-    by_id = {r["run_id"]: r for r in selected}
-    idx_of = {rid: i for i, rid in enumerate(run_ids)}
-    rows = []
-    # strict overall: entries shared by ALL selected runs, across all groups.
-    overall = {rid: [] for rid in run_ids}
-    overall_n = 0
-    for key in sorted(per_group):
-        g = per_group[key]
-        runs_here = [rid for rid in run_ids if rid in g]
-        if len(runs_here) < 2:
-            continue
-        shared = set.intersection(*(set(g[rid]) for rid in runs_here))
-        if not shared:
-            continue
-        if len(runs_here) == len(run_ids):
-            overall_n += len(shared)
-            for rid in runs_here:
-                overall[rid].extend(g[rid][e] for e in shared)
-        means = {rid: sum(g[rid][e] for e in shared) / len(shared)
-                 for rid in runs_here}
-        rows.append(
-            f'<tr class="grp"><td colspan="4">{" &middot; ".join(_e(k) for k in key)}'
-            f' <span class="muted">n={len(shared)} shared &middot; '
-            f'{len(runs_here)}/{len(run_ids)} runs</span></td></tr>')
-        for rid in runs_here:
-            m = means[rid]
-            barw = int(round(max(0.0, min(1.0, m / bar_scale)) * 80))
-            delta = ("" if rid == base_id or base_id not in means
-                     else _fmt_delta(m - means[base_id], digits - 1))
-            rows.append(
-                f'<tr><td>{_runtag(rid, idx_of[rid], base_id)} '
-                f'{_e(by_id[rid]["label"] or by_id[rid]["checkpoint"])}</td>'
-                f'<td class="num">{_fmt_num(m, digits)}</td>'
-                f'<td><span class="bar" style="width:{barw}px"></span></td>'
-                f'<td class="num">{delta}</td></tr>')
+def _render_items(selected, run_ids, base_id, rows) -> str:
+    """One macro-row per eval item: context / verbalizer_prompt /
+    correct_response cells span the item's block; one sub-row per method
+    (run) carrying the on-demand cluster scorer; one sub-sub-row per
+    verbalization with its color-coded judge score prefacing the text.
+    Items are ordered by score spread across methods (most disagreement
+    first)."""
     if not rows:
-        return None
-    head = (f'<tr><th>run</th><th>{value_hdr}</th><th></th>'
-            f'<th>&Delta; vs base</th></tr>')
-    table = f"<table>{head}{''.join(rows)}</table>"
-    if overall_n:
-        olines = []
-        base_mean = (sum(overall[base_id]) / len(overall[base_id])
-                     if overall.get(base_id) else None)
-        for rid in run_ids:
-            if not overall[rid]:
-                continue
-            m = sum(overall[rid]) / len(overall[rid])
-            d = ("" if rid == base_id or base_mean is None
-                 else " " + _fmt_delta(m - base_mean, digits - 1))
-            olines.append(f'{_runtag(rid, idx_of[rid], base_id)} '
-                          f'{_fmt_num(m, digits)}{d}')
-        table = (f'<p class="muted">strict intersection over all '
-                 f'{len(run_ids)} runs ({overall_n} examples): '
-                 f'{" &nbsp; ".join(olines)}</p>') + table
-    return table
-
-
-def _render_compare_sections(selected, run_ids, base_id, mets, recog, oe,
-                             movers_html) -> str:
+        return _empty("No open-ended rows for this eval on the selected runs.")
+    names = {r["run_id"]: _short_ckpt(r["checkpoint"]) for r in selected}
     idx_of = {rid: i for i, rid in enumerate(run_ids)}
+    method_order = ([base_id] + [r for r in run_ids if r != base_id]
+                    if base_id in run_ids else list(run_ids))
 
-    def _runline(r):
-        base = (' <span class="pill">baseline</span>' if r["is_baseline"] else "")
-        return (f'<tr><td>{_runtag(r["run_id"], idx_of[r["run_id"]], base_id)}</td>'
-                f'<td><a href="/av/run/{r["run_id"]}">#{r["run_id"]}</a></td>'
-                f'<td>{_e(r["label"])}{base}</td>'
-                f'<td><span class="pill">{_e(r["source"])}</span></td>'
-                f'<td>{_e(r["model_name"])}</td>'
-                f'<td class="pre">{_e(r["checkpoint"])}</td>'
-                f'<td>{_e(_fmt_ts(r["created_at"]))}</td></tr>')
-    head = f"""<table>
-      <tr><th></th><th>run</th><th>label</th><th>source</th><th>model</th>
-          <th>checkpoint</th><th>created (UTC)</th></tr>
-      {''.join(_runline(r) for r in selected)}
-    </table>"""
+    items: dict[int, dict[int, list[dict]]] = {}
+    for r in rows:
+        items.setdefault(r["example_idx"], {}).setdefault(r["run_id"], []).append(r)
 
-    # --- aggregate metrics: metric rows x run columns, delta vs base ---
-    vals = {}
-    for m in mets:
-        vals.setdefault(m["metric_key"], {})[m["run_id"]] = m["value"]
-    if vals:
-        cols = "".join(f'<th>{_runtag(rid, idx_of[rid], base_id)}</th>'
-                       for rid in run_ids)
-        mrows = []
-        for mk in sorted(vals):
-            tds = [f'<td><code>{_e(mk)}</code></td>']
-            bv = vals[mk].get(base_id)
-            for rid in run_ids:
-                v = vals[mk].get(rid)
-                if v is None:
-                    tds.append('<td class="num"></td>')
-                    continue
-                d = ("" if rid == base_id or bv is None
-                     else f' <span class="muted">{_fmt_delta(v - bv)}</span>')
-                tds.append(f'<td class="num">{_fmt_num(v, 4)}{d}</td>')
-            mrows.append(f'<tr>{"".join(tds)}</tr>')
-        mtable = (f'<table><tr><th>metric_key</th>{cols}</tr>'
-                  f'{"".join(mrows)}</table>')
-    else:
-        mtable = _empty("No aggregate metrics on the selected runs.")
+    def _spread(by_run) -> float:
+        means = []
+        for rollouts in by_run.values():
+            scored = [x["score"] for x in rollouts if x["score"] is not None]
+            if scored:
+                means.append(sum(scored) / len(scored))
+        return (max(means) - min(means)) if len(means) >= 2 else 0.0
 
-    # --- recog: macro-row per (suite, task, tier), sub-row per run ---
-    rg = {}
-    for r in recog:
-        rg.setdefault((r["suite"], r["task"], r["tier"]), {}) \
-          .setdefault(r["run_id"], {})[r["entry"]] = float(r["p_correct"])
-    rtable = _grouped_table(selected, run_ids, base_id, rg,
-                            "p_correct", bar_scale=1.0)
-    rtable = rtable or _empty("No recog tasks shared by two or more of the "
-                              "selected runs.")
+    ordered = sorted(items.items(), key=lambda kv: (-_spread(kv[1]), kv[0]))
+    eval_name = rows[0]["eval_name"]
 
-    # --- open-ended: macro-row per (eval_name, mode), sub-row per run ---
-    og = {}
-    for r in oe:
-        if r["score"] is None:
-            continue
-        og.setdefault((r["eval_name"], r["mode"] or "(none)"), {}) \
-          .setdefault(r["run_id"], {})[r["example_idx"]] = float(r["score"])
-    otable = _grouped_table(selected, run_ids, base_id, og,
-                            "score", bar_scale=5.0, digits=3)
-    otable = otable or _empty("No open-ended evals shared by two or more of "
-                              "the selected runs.")
+    trs = []
+    for idx, by_run in ordered:
+        methods = [rid for rid in method_order if rid in by_run]
+        total = sum(len(by_run[rid]) for rid in methods)
+        ctx, vp, correct = _item_fields(by_run[methods[0]])
+        first_item_row = True
+        for rid in methods:
+            rollouts = sorted(by_run[rid], key=lambda x: x["mode"])
+            cl_id = f"cl_{rid}_{idx}"
+            method_cell = (
+                f'<td rowspan="{len(rollouts)}">'
+                f'{_runtag(rid, idx_of[rid], base_id, names[rid])}'
+                f'<div style="margin-top:6px">'
+                f'<button class="meta-btn" data-run="{rid}" '
+                f'data-eval="{_e(eval_name)}" data-idx="{idx}" '
+                f'data-target="{cl_id}">&#128269; cluster score</button>'
+                f'<div id="{cl_id}" class="meta-out"></div></div></td>')
+            first_method_row = True
+            for ro in rollouts:
+                tds = []
+                cls = ' class="item-top"' if first_item_row else ""
+                if first_item_row:
+                    tds.append(f'<td class="pre" rowspan="{total}">'
+                               f'{_long_text(ctx, 400)}</td>')
+                    tds.append(f'<td class="pre" rowspan="{total}">{_e(vp)}</td>')
+                if first_method_row:
+                    tds.append(method_cell)
+                mode_tag = (f' <span class="muted">{_e(ro["mode"])}</span>'
+                            if len(rollouts) > 1 else "")
+                just = (f' <details><summary>judge reasoning</summary>'
+                        f'<div class="judge">{_e(ro["judge_justification"])}</div></details>'
+                        if ro["judge_justification"] else "")
+                tds.append(f'<td class="pre">{_score_chip(ro["score"])}{mode_tag} '
+                           f'{_long_text(ro["generation"])}{just}</td>')
+                if first_item_row:
+                    tds.append(f'<td class="pre" rowspan="{total}">{_e(correct)}</td>')
+                trs.append(f'<tr{cls}>{"".join(tds)}</tr>')
+                first_item_row = False
+                first_method_row = False
 
-    if not movers_html and len(selected) > 2:
-        movers_html = ('<p class="muted">Per-example mover drill-downs show '
-                       'when exactly two runs are selected.</p>')
-
-    return (f'{head}'
-            f'<h2>Aggregate metrics</h2>{mtable}'
-            f'<h2>Recog &mdash; shared examples</h2>{rtable}'
-            f'<h2>Open-ended &mdash; shared examples</h2>{otable}'
-            f'{movers_html}')
+    head = ('<tr><th style="width:24%">context</th>'
+            '<th style="width:16%">verbalizer_prompt</th>'
+            '<th style="width:12%">method</th>'
+            '<th>verbalization(s)</th>'
+            '<th style="width:13%">correct_response</th></tr>')
+    note = (f'<p class="muted">{len(ordered)} items &middot; '
+            f'{len(run_ids)} methods &middot; ordered by score spread '
+            f'(most method disagreement first)</p>')
+    return note + f"<table>{head}{''.join(trs)}</table>" + _CLUSTER_JS
 
 
-def _render_movers(db, a_id: int, base_id: int) -> str:
-    """Two-run mode: per-example drill-downs, biggest |delta| first
-    (A = the non-baseline run, B = the designated baseline)."""
-    recog_movers = db.query(f"""
-        SELECT a.suite, a.task, a.tier, a.example_idx, a.entry_id,
-               a.p_correct AS pa, b.p_correct AS pb,
-               a.p_correct - b.p_correct AS d,
-               a.correct_response, a.incorrect_plausible_response
-        FROM recog_examples a {_RECOG_JOIN}
-        WHERE a.run_id = %s
-        ORDER BY abs(a.p_correct - b.p_correct) DESC
-        LIMIT 40
-    """, (base_id, a_id))
-    oe_movers = db.query(f"""
-        SELECT a.eval_name, a.mode, a.example_idx,
-               a.score AS sa, b.score AS sb, a.score - b.score AS d,
-               a.prompt, a.generation AS gen_a, b.generation AS gen_b,
-               a.target
-        FROM open_ended_examples a {_OE_JOIN}
-        WHERE a.run_id = %s
-          AND a.score IS NOT NULL AND b.score IS NOT NULL
-        ORDER BY abs(a.score - b.score) DESC
-        LIMIT 30
-    """, (base_id, a_id))
-
-    out = ""
-    if recog_movers:
-        mv = "".join(
-            f'<tr><td>{_e(r["suite"])}</td><td>{_e(r["task"])}</td>'
-            f'<td><span class="pill">{_e(r["tier"])}</span></td>'
-            f'<td class="num">{_e(r["entry_id"] or r["example_idx"])}</td>'
-            f'<td class="num">{_fmt_num(r["pa"])}</td>'
-            f'<td class="num">{_fmt_num(r["pb"])}</td>'
-            f'<td class="num">{_fmt_delta(r["d"])}</td>'
-            f'<td class="pre">{_e(r["correct_response"])}</td>'
-            f'<td class="pre">{_e(r["incorrect_plausible_response"])}</td></tr>'
-            for r in recog_movers)
-        out += f"""<details><summary>biggest recog movers
-          (#{a_id} vs base #{base_id}, top {len(recog_movers)} by
-          |&Delta;p_correct|)</summary>
-          <table><tr><th>suite</th><th>task</th><th>tier</th><th>entry</th>
-            <th>p_corr A</th><th>p_corr base</th><th>&Delta;</th>
-            <th>correct_response</th><th>incorrect_plausible</th></tr>
-          {mv}</table></details>"""
-    if oe_movers:
-        omv = []
-        for r in oe_movers:
-            omv.append(f"""<tr>
-              <td>{_e(r["eval_name"])}</td>
-              <td class="num">{_e(r["example_idx"])}</td>
-              <td class="num">{_fmt_num(r["sa"])}</td>
-              <td class="num">{_fmt_num(r["sb"])}</td>
-              <td class="num">{_fmt_delta(r["d"], 2)}</td>
-              <td class="pre"><details><summary>A generation</summary>
-                  <div class="pre">{_e(r["gen_a"])}</div></details>
-                  <details><summary>base generation</summary>
-                  <div class="pre">{_e(r["gen_b"])}</div></details></td>
-              <td class="pre"><details><summary>target</summary>
-                  <div class="pre">{_e(r["target"])}</div></details>
-                  <details><summary>prompt</summary>
-                  <div class="pre">{_e(r["prompt"])}</div></details></td>
-            </tr>""")
-        out += f"""<details><summary>biggest open-ended movers
-          (#{a_id} vs base #{base_id}, top {len(oe_movers)} by
-          |&Delta;score|)</summary>
-          <table><tr><th>eval_name</th><th>idx</th><th>A</th><th>base</th>
-            <th>&Delta;</th><th>generations</th><th>target / prompt</th></tr>
-          {"".join(omv)}</table></details>"""
-    return out
+_CLUSTER_JS = """
+<script>
+(function() {
+  // One-at-a-time cluster scorer (no Anthropic concurrency).
+  let BUSY = false;
+  document.querySelectorAll('button.meta-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (BUSY) { alert('A cluster-score call is already in flight.'); return; }
+      const tgt = document.getElementById(btn.dataset.target);
+      if (!tgt) return;
+      if (tgt.dataset.loaded === '1') {
+        tgt.style.display = (tgt.style.display === 'none' ? 'block' : 'none');
+        return;
+      }
+      BUSY = true; btn.disabled = true; btn.textContent = '\\u23f3 scoring\\u2026';
+      tgt.style.display = 'block';
+      tgt.innerHTML = '<span class="muted">loading\\u2026</span>';
+      try {
+        const sp = new URLSearchParams({
+          run_id: btn.dataset.run, eval_name: btn.dataset.eval,
+          example_idx: btn.dataset.idx,
+        });
+        const r = await fetch('/av/api/item_cluster_score?' + sp.toString());
+        const j = await r.json();
+        if (j.error) {
+          tgt.innerHTML = '<span style="color:#dc2626">err: ' + j.error + '</span>';
+        } else {
+          const cs = j.cluster_score;
+          const cls = cs == null ? '' : (cs <= 2 ? 'score-1' : cs == 3 ? 'score-3' : 'score-5');
+          tgt.innerHTML = '<div class="meta-card ' + cls + '">' +
+            '<strong>' + (cs == null ? '?' : cs) + '/5</strong>' +
+            '<div class="meta-just">' + (j.digest || '') + '</div></div>';
+        }
+        tgt.dataset.loaded = '1';
+      } catch (e) {
+        tgt.innerHTML = '<span style="color:#dc2626">fetch err: ' + e + '</span>';
+      } finally {
+        BUSY = false; btn.disabled = false;
+        btn.textContent = '\\ud83d\\udd0d cluster score';
+      }
+    });
+  });
+})();
+</script>"""
 
 
-# ============================================================
-#  Route 5: metric_key x checkpoint matrix
-# ============================================================
-@av.route("/matrix")
-def matrix():
+@av.route("/api/item_cluster_score")
+def api_item_cluster_score():
+    """On-demand Haiku score + digest for one method's verbalization cluster
+    on one item. One call per click (sequential by design); cached in-process
+    so repeat clicks are free until restart."""
+    run_id = request.args.get("run_id", type=int)
+    eval_name = request.args.get("eval_name")
+    example_idx = request.args.get("example_idx", type=int)
+    if run_id is None or not eval_name or example_idx is None:
+        return jsonify({"error": "run_id, eval_name, example_idx required"}), 400
+    key = (run_id, eval_name, example_idx)
+    if key in _CLUSTER_SCORE_CACHE:
+        return jsonify(_CLUSTER_SCORE_CACHE[key])
+
     db = _conn()
     try:
-        # latest run per checkpoint (max created_at).
-        latest = db.query("""
-            SELECT DISTINCT ON (checkpoint)
-                   run_id, checkpoint, created_at
-            FROM eval_runs
-            ORDER BY checkpoint, created_at DESC
-        """)
-        cells: dict[tuple[str, str], float] = {}
-        metric_keys: set[str] = set()
-        if latest:
-            run_ids = [r["run_id"] for r in latest]
-            run_to_ckpt = {r["run_id"]: r["checkpoint"] for r in latest}
-            placeholders = ",".join(["%s"] * len(run_ids))
-            mrows = db.query(
-                f"SELECT run_id, metric_key, value FROM metrics "
-                f"WHERE run_id IN ({placeholders})", tuple(run_ids))
-            for m in mrows:
-                ckpt = run_to_ckpt[m["run_id"]]
-                cells[(m["metric_key"], ckpt)] = m["value"]
-                metric_keys.add(m["metric_key"])
+        rows = db.query(
+            "SELECT mode, prompt, generation, target, score, "
+            "judge_justification, meta_json FROM open_ended_examples "
+            "WHERE run_id=%s AND eval_name=%s AND example_idx=%s ORDER BY mode",
+            (run_id, eval_name, example_idx))
     finally:
         db.close()
+    if not rows:
+        return jsonify({"error": "no rows for this cluster"}), 404
 
-    if not latest:
-        return _page("Metric matrix", "<h2>Metric matrix</h2>" + _empty(
-            "No eval runs in the database yet."))
-    if not metric_keys:
-        return _page("Metric matrix", "<h2>Metric matrix</h2>" + _empty(
-            "No metrics recorded for any run yet."))
-
-    checkpoints = sorted({r["checkpoint"] for r in latest})
-    header = ("<tr><th>metric_key</th>"
-              + "".join(f'<th>{_e(c)}</th>' for c in checkpoints)
-              + "</tr>")
-    trs = []
-    for mk in sorted(metric_keys):
-        tds = [f'<td><code>{_e(mk)}</code></td>']
-        for c in checkpoints:
-            v = cells.get((mk, c))
-            tds.append(f'<td class="num">{_fmt_num(v, 5)}</td>')
-        trs.append(f'<tr>{"".join(tds)}</tr>')
-
-    note = (f'<p class="muted">{len(metric_keys)} metric(s) &times; '
-            f'{len(checkpoints)} checkpoint(s). One column per checkpoint, '
-            f'using its latest eval run.</p>')
-    table = f'<table>{header}{"".join(trs)}</table>'
-    return _page("Metric matrix", f"<h2>Metric matrix</h2>{note}{table}")
+    _, vp, correct = _item_fields(rows)
+    # Caps are far above real AV generations (<=150 new tokens) — they only
+    # guard against pathological blobs, they never bind in practice.
+    parts = [f"QUESTION:\n{vp[:4000]}\n\nCORRECT_RESPONSE:\n{correct[:4000]}\n"]
+    for i, r in enumerate(rows[:30]):
+        sc = "-" if r["score"] is None else f"{r['score']:.0f}"
+        parts.append(f"\n[rollout {i+1}, judge={sc}] {(r['generation'] or '')[:4000]}")
+    if len(rows) > 30:
+        parts.append(f"\n...(+{len(rows) - 30} more rollouts omitted)...")
+    try:
+        # Anthropic requires thinking budget >= 1024 and max_tokens above it.
+        text, usage = haiku_call(_CLUSTER_SYSTEM, "".join(parts),
+                                 max_tokens=2048, thinking_budget=1024)
+        cluster_score = None; digest = text.strip()
+        obj = extract_json(text)
+        if obj:
+            try:
+                if obj.get("cluster_score") is not None:
+                    cluster_score = min(5, max(1, int(obj["cluster_score"])))
+            except (ValueError, TypeError):
+                cluster_score = None
+            if obj.get("digest"):
+                digest = str(obj["digest"])
+        out = {
+            "cluster_score": cluster_score, "digest": digest,
+            "n_rollouts": len(rows),
+            "input_tokens": getattr(usage, "input_tokens", None),
+            "output_tokens": getattr(usage, "output_tokens", None),
+        }
+        _CLUSTER_SCORE_CACHE[key] = out
+        return jsonify(out)
+    except Exception as exc:
+        return jsonify({"error": f"haiku call failed: {exc}"}), 500
 
 
 # ============================================================
