@@ -81,6 +81,12 @@ details[open] summary { color: #334155; margin-bottom: 4px; }
 .score-1, .score-2 { background: #fee2e2; }
 .score-3 { background: #fef3c7; }
 .score-4, .score-5 { background: #dcfce7; }
+.dpos { color: #16a34a; font-weight: 600; }
+.dneg { color: #dc2626; font-weight: 600; }
+.runtag { display: inline-block; padding: 2px 8px; border-radius: 3px;
+          font-size: 11px; font-weight: 600; color: #fff; }
+.runtag.a { background: #2563eb; }
+.runtag.b { background: #9333ea; }
 .judge { background: #fff7ed; border-left: 3px solid #f59e0b; padding: 4px 8px;
          font-size: 12px; white-space: pre-wrap; word-break: break-word;
          font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -116,6 +122,8 @@ details[open] summary { color: #334155; margin-bottom: 4px; }
   .score-1, .score-2 { background: #3b1416; }
   .score-3 { background: #2a2113; }
   .score-4, .score-5 { background: #14302a; }
+  .dpos { color: #4ade80; }
+  .dneg { color: #f87171; }
   .judge { background: #2a2113; color: #fde68a; }
   .meta-btn { background: #1e1b4b; color: #a5b4fc; }
   .meta-btn:hover { background: #312e81; }
@@ -144,7 +152,7 @@ def _page(title: str, body: str) -> str:
   <nav>
     <a href="/">AO bench</a><a href="/predictions">Predictions</a><a href="/agents">Agents</a>
     <span class="navsep">|</span>
-    <a href="/av/" class="here">AV runs</a><a href="/av/matrix">AV matrix</a>{att}
+    <a href="/av/" class="here">AV runs</a><a href="/av/compare">Compare</a><a href="/av/matrix">AV matrix</a>{att}
   </nav>
   <span class="dbinfo">db: {_e(config.av_db_url)}{gate}</span>
 </header>
@@ -249,13 +257,14 @@ def overview():
           <td class="num"><a href="/av/run/{r['run_id']}/recog">{r['n_recog']}</a></td>
           <td class="num"><a href="/av/run/{r['run_id']}/open_ended">{r['n_open']}</a></td>
           <td class="num"><a href="/av/run/{r['run_id']}">{r['n_metrics']}</a></td>
+          <td><a href="/av/compare?a={r['run_id']}">cmp</a></td>
         </tr>""")
 
     if trs:
         table = f"""<table>
           <tr><th>run_id</th><th>checkpoint</th><th>source</th><th>step</th>
               <th>examples_seen</th><th>model</th><th>label</th><th>created (UTC)</th>
-              <th>#recog</th><th>#open_ended</th><th>#metrics</th></tr>
+              <th>#recog</th><th>#open_ended</th><th>#metrics</th><th>cmp</th></tr>
           {''.join(trs)}
         </table>"""
     else:
@@ -303,6 +312,7 @@ def run_detail(run_id: int):
     links = (f'<div class="controls">'
              f'<a href="/av/run/{run_id}/recog">recog examples ({n_recog})</a>'
              f'<a href="/av/run/{run_id}/open_ended">open-ended examples ({n_open})</a>'
+             f'<a href="/av/compare?a={run_id}">compare against another run / baseline &rarr;</a>'
              f'</div>')
 
     if metrics:
@@ -740,6 +750,274 @@ def api_oe_meta_score():
         return jsonify(out)
     except Exception as exc:
         return jsonify({"error": f"haiku call failed: {exc}"}), 500
+
+
+# ============================================================
+#  Route 4c: compare two runs (A vs B, where B is often a baseline)
+# ============================================================
+# Reference/baseline runs — the published Adam Karvonen verbalizers and the
+# nanoNLA full fine-tune that the comparison evals (avbench_recog_violin,
+# aobplus_oe) evaluate alongside our pool AOs — are flagged so the picker
+# surfaces them as natural comparison targets. `\_` escapes the LIKE
+# single-char wildcard; `%%` because Conn always passes a params tuple.
+_BASELINE_SQL = (r"(label ILIKE '%%ref\_%%' OR label ILIKE '%%nanonla%%' "
+                 r"OR checkpoint ILIKE '%%adamkarvonen%%' "
+                 r"OR checkpoint ILIKE '%%nanonla%%')")
+
+# Shared-example join keys: recog rows match on (suite, task, tier, entry)
+# where entry prefers the stable entry_id over the per-run sampling index;
+# open-ended rows match on (eval_name, mode, example_idx).
+_RECOG_JOIN = (
+    "JOIN recog_examples b ON b.run_id = %s "
+    "AND b.suite = a.suite AND b.task = a.task AND b.tier = a.tier "
+    "AND COALESCE(b.entry_id, b.example_idx::text) = "
+    "    COALESCE(a.entry_id, a.example_idx::text)")
+_OE_JOIN = (
+    "JOIN open_ended_examples b ON b.run_id = %s "
+    "AND b.eval_name = a.eval_name AND b.mode = a.mode "
+    "AND b.example_idx = a.example_idx")
+
+
+def _fmt_delta(d, digits: int = 3) -> str:
+    if d is None:
+        return ""
+    d = float(d)
+    cls = "dpos" if d > 1e-9 else ("dneg" if d < -1e-9 else "")
+    return f'<span class="{cls}">{d:+.{digits}f}</span>'
+
+
+def _run_option(r, selected_id) -> str:
+    sel = " selected" if r["run_id"] == selected_id else ""
+    base = " [baseline]" if r["is_baseline"] else ""
+    label = r["label"] or r["checkpoint"]
+    return (f'<option value="{r["run_id"]}"{sel}>'
+            f'#{r["run_id"]} &middot; {_e(label)} ({_e(r["source"])})'
+            f'{base}</option>')
+
+
+@av.route("/compare")
+def compare():
+    a_id = request.args.get("a", type=int)
+    b_id = request.args.get("b", type=int)
+
+    db = _conn()
+    try:
+        runs = db.query(f"""
+            SELECT run_id, checkpoint, label, source, model_name, created_at,
+                   {_BASELINE_SQL} AS is_baseline
+            FROM eval_runs r
+            ORDER BY created_at DESC
+        """)
+        by_id = {r["run_id"]: r for r in runs}
+        # Default B: the most recent baseline run (that isn't A).
+        if b_id is None:
+            b_id = next((r["run_id"] for r in runs
+                         if r["is_baseline"] and r["run_id"] != a_id), None)
+
+        run_a = by_id.get(a_id)
+        run_b = by_id.get(b_id)
+        sections = ""
+        if run_a and run_b and a_id != b_id:
+            metrics = db.query("""
+                SELECT metric_key, ma.value AS va, mb.value AS vb
+                FROM (SELECT metric_key, value FROM metrics WHERE run_id = %s) ma
+                FULL OUTER JOIN
+                     (SELECT metric_key, value FROM metrics WHERE run_id = %s) mb
+                USING (metric_key)
+                ORDER BY metric_key
+            """, (a_id, b_id))
+            recog_tasks = db.query(f"""
+                SELECT a.suite, a.task, a.tier, count(*) AS n,
+                       avg(a.p_correct) AS pa, avg(b.p_correct) AS pb,
+                       avg(a.p_correct - b.p_correct) AS d
+                FROM recog_examples a {_RECOG_JOIN}
+                WHERE a.run_id = %s
+                GROUP BY a.suite, a.task, a.tier
+                ORDER BY a.suite, a.task, a.tier
+            """, (b_id, a_id))
+            recog_movers = db.query(f"""
+                SELECT a.suite, a.task, a.tier, a.example_idx, a.entry_id,
+                       a.p_correct AS pa, b.p_correct AS pb,
+                       a.p_correct - b.p_correct AS d,
+                       a.correct_response, a.incorrect_plausible_response
+                FROM recog_examples a {_RECOG_JOIN}
+                WHERE a.run_id = %s
+                ORDER BY abs(a.p_correct - b.p_correct) DESC
+                LIMIT 40
+            """, (b_id, a_id))
+            oe_evals = db.query(f"""
+                SELECT a.eval_name, a.mode, count(*) AS n,
+                       avg(a.score) AS sa, avg(b.score) AS sb,
+                       avg(a.score - b.score) AS d
+                FROM open_ended_examples a {_OE_JOIN}
+                WHERE a.run_id = %s
+                GROUP BY a.eval_name, a.mode
+                ORDER BY a.eval_name, a.mode
+            """, (b_id, a_id))
+            oe_movers = db.query(f"""
+                SELECT a.eval_name, a.mode, a.example_idx,
+                       a.score AS sa, b.score AS sb, a.score - b.score AS d,
+                       a.prompt, a.generation AS gen_a, b.generation AS gen_b,
+                       a.target
+                FROM open_ended_examples a {_OE_JOIN}
+                WHERE a.run_id = %s
+                  AND a.score IS NOT NULL AND b.score IS NOT NULL
+                ORDER BY abs(a.score - b.score) DESC
+                LIMIT 30
+            """, (b_id, a_id))
+            sections = _render_compare_sections(
+                run_a, run_b, metrics, recog_tasks, recog_movers,
+                oe_evals, oe_movers)
+    finally:
+        db.close()
+
+    # Picker: baselines first, then the rest (recency order within groups).
+    base_opts = "".join(_run_option(r, b_id) for r in runs if r["is_baseline"])
+    run_opts_a = "".join(_run_option(r, a_id) for r in runs)
+    run_opts_b = "".join(_run_option(r, b_id) for r in runs if not r["is_baseline"])
+    picker = f"""
+    <div class="controls">
+      <form method="get">
+        <label><span class="runtag a">A</span> run:
+          <select name="a" onchange="this.form.submit()">
+            <option value="">(pick run A)</option>{run_opts_a}
+          </select></label>
+        <label><span class="runtag b">B</span> reference:
+          <select name="b" onchange="this.form.submit()">
+            <option value="">(pick run B / baseline)</option>
+            <optgroup label="baselines / references">{base_opts}</optgroup>
+            <optgroup label="other runs">{run_opts_b}</optgroup>
+          </select></label>
+        <noscript><button type="submit">Compare</button></noscript>
+      </form>
+      {f'<a href="/av/compare?a={b_id}&b={a_id}">&#8646; swap</a>' if run_a and run_b else ''}
+    </div>"""
+
+    if not (run_a and run_b):
+        body = picker + _empty("Pick run A and a reference run B "
+                               "(baselines are grouped at the top).")
+    elif a_id == b_id:
+        body = picker + _empty("A and B are the same run — pick two "
+                               "different runs.")
+    else:
+        body = picker + sections
+    return _page("Compare runs", f"<h2>Compare runs</h2>{body}")
+
+
+def _render_compare_sections(run_a, run_b, metrics, recog_tasks,
+                             recog_movers, oe_evals, oe_movers) -> str:
+    def _runline(tag, r):
+        base = ' <span class="pill">baseline</span>' if r["is_baseline"] else ""
+        return (f'<tr><td><span class="runtag {tag.lower()}">{tag}</span></td>'
+                f'<td><a href="/av/run/{r["run_id"]}">#{r["run_id"]}</a></td>'
+                f'<td>{_e(r["label"])}{base}</td>'
+                f'<td><span class="pill">{_e(r["source"])}</span></td>'
+                f'<td>{_e(r["model_name"])}</td>'
+                f'<td class="pre">{_e(r["checkpoint"])}</td>'
+                f'<td>{_e(_fmt_ts(r["created_at"]))}</td></tr>')
+    head = f"""<table>
+      <tr><th></th><th>run</th><th>label</th><th>source</th><th>model</th>
+          <th>checkpoint</th><th>created (UTC)</th></tr>
+      {_runline("A", run_a)}{_runline("B", run_b)}
+    </table>"""
+
+    # --- aggregate metrics ---
+    if metrics:
+        mrows = "".join(
+            f'<tr><td><code>{_e(m["metric_key"])}</code></td>'
+            f'<td class="num">{_fmt_num(m["va"], 5)}</td>'
+            f'<td class="num">{_fmt_num(m["vb"], 5)}</td>'
+            f'<td class="num">{_fmt_delta(m["va"] - m["vb"], 4) if m["va"] is not None and m["vb"] is not None else ""}</td></tr>'
+            for m in metrics)
+        mtable = (f'<table><tr><th>metric_key</th><th>A</th><th>B</th>'
+                  f'<th>&Delta; (A&minus;B)</th></tr>{mrows}</table>')
+    else:
+        mtable = _empty("Neither run has aggregate metrics.")
+
+    # --- recog: per-(suite, task, tier) means over SHARED examples ---
+    if recog_tasks:
+        tot_n = sum(r["n"] for r in recog_tasks)
+        tot_pa = sum(r["pa"] * r["n"] for r in recog_tasks) / tot_n
+        tot_pb = sum(r["pb"] * r["n"] for r in recog_tasks) / tot_n
+        rrows = "".join(
+            f'<tr><td>{_e(r["suite"])}</td><td>{_e(r["task"])}</td>'
+            f'<td><span class="pill">{_e(r["tier"])}</span></td>'
+            f'<td class="num">{r["n"]}</td>'
+            f'<td class="num">{_fmt_num(r["pa"])}</td>'
+            f'<td class="num">{_fmt_num(r["pb"])}</td>'
+            f'<td class="num">{_fmt_delta(r["d"])}</td></tr>'
+            for r in recog_tasks)
+        rrows += (f'<tr><th colspan="3">overall (shared examples)</th>'
+                  f'<th class="num">{tot_n}</th>'
+                  f'<th class="num">{_fmt_num(tot_pa)}</th>'
+                  f'<th class="num">{_fmt_num(tot_pb)}</th>'
+                  f'<th class="num">{_fmt_delta(tot_pa - tot_pb)}</th></tr>')
+        rtable = (f'<table><tr><th>suite</th><th>task</th><th>tier</th>'
+                  f'<th>n</th><th>p_correct A</th><th>p_correct B</th>'
+                  f'<th>&Delta;</th></tr>{rrows}</table>')
+        mv = "".join(
+            f'<tr><td>{_e(r["suite"])}</td><td>{_e(r["task"])}</td>'
+            f'<td><span class="pill">{_e(r["tier"])}</span></td>'
+            f'<td class="num">{_e(r["entry_id"] or r["example_idx"])}</td>'
+            f'<td class="num">{_fmt_num(r["pa"])}</td>'
+            f'<td class="num">{_fmt_num(r["pb"])}</td>'
+            f'<td class="num">{_fmt_delta(r["d"])}</td>'
+            f'<td class="pre">{_e(r["correct_response"])}</td>'
+            f'<td class="pre">{_e(r["incorrect_plausible_response"])}</td></tr>'
+            for r in recog_movers)
+        rmovers = f"""<details><summary>biggest recog movers
+          (top {len(recog_movers)} by |&Delta;p_correct|)</summary>
+          <table><tr><th>suite</th><th>task</th><th>tier</th><th>entry</th>
+            <th>p_corr A</th><th>p_corr B</th><th>&Delta;</th>
+            <th>correct_response</th><th>incorrect_plausible</th></tr>
+          {mv}</table></details>"""
+    else:
+        rtable = _empty("No shared recog examples between these runs.")
+        rmovers = ""
+
+    # --- open-ended: per-(eval_name, mode) means over SHARED examples ---
+    if oe_evals:
+        orows = "".join(
+            f'<tr><td>{_e(r["eval_name"])}</td>'
+            f'<td>{_e(r["mode"] or "(none)")}</td>'
+            f'<td class="num">{r["n"]}</td>'
+            f'<td class="num">{_fmt_num(r["sa"])}</td>'
+            f'<td class="num">{_fmt_num(r["sb"])}</td>'
+            f'<td class="num">{_fmt_delta(r["d"], 2)}</td></tr>'
+            for r in oe_evals)
+        otable = (f'<table><tr><th>eval_name</th><th>mode</th><th>n</th>'
+                  f'<th>score A</th><th>score B</th><th>&Delta;</th></tr>'
+                  f'{orows}</table>')
+        omv = []
+        for r in oe_movers:
+            omv.append(f"""<tr>
+              <td>{_e(r["eval_name"])}</td>
+              <td class="num">{_e(r["example_idx"])}</td>
+              <td class="num">{_fmt_num(r["sa"])}</td>
+              <td class="num">{_fmt_num(r["sb"])}</td>
+              <td class="num">{_fmt_delta(r["d"], 2)}</td>
+              <td class="pre"><details><summary>A generation</summary>
+                  <div class="pre">{_e(r["gen_a"])}</div></details>
+                  <details><summary>B generation</summary>
+                  <div class="pre">{_e(r["gen_b"])}</div></details></td>
+              <td class="pre"><details><summary>target</summary>
+                  <div class="pre">{_e(r["target"])}</div></details>
+                  <details><summary>prompt</summary>
+                  <div class="pre">{_e(r["prompt"])}</div></details></td>
+            </tr>""")
+        omovers = f"""<details><summary>biggest open-ended movers
+          (top {len(oe_movers)} by |&Delta;score|)</summary>
+          <table><tr><th>eval_name</th><th>idx</th><th>A</th><th>B</th>
+            <th>&Delta;</th><th>generations</th><th>target / prompt</th></tr>
+          {"".join(omv)}</table></details>"""
+    else:
+        otable = _empty("No shared open-ended examples between these runs.")
+        omovers = ""
+
+    return (f'{head}'
+            f'<h2>Aggregate metrics</h2>{mtable}'
+            f'<h2>Recog &mdash; shared examples</h2>{rtable}{rmovers}'
+            f'<h2>Open-ended &mdash; shared examples</h2>{otable}{omovers}')
 
 
 # ============================================================

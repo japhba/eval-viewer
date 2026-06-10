@@ -5,7 +5,7 @@ Unified web viewer for two eval Postgres databases, one Flask process:
 | viewer | mount | DB | UI |
 |--------|-------|----|----|
 | **AO viewer** | `/` | `method_bench` | task x method score matrix, paged predictions/cluster table, per-cell drill-down, agent-run traces |
-| **AV viewer** | `/av/` | `activation_oracles` | AVBench eval_runs overview, per-run metrics / recog / open-ended examples (with on-demand Haiku meta-judge), metric matrix, attention-figure browser |
+| **AV viewer** | `/av/` | `activation_oracles` | AVBench eval_runs overview, per-run metrics / recog / open-ended examples (with on-demand Haiku meta-judge), run comparison (A vs B over shared examples, baseline/reference runs flagged in the picker), metric matrix, attention-figure browser |
 
 Both originated as single-purpose `scripts/eval_viewer.py` files in the
 loracles and activation_oracles_dev repos; those are deleted and this package
