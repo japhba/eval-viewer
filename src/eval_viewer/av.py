@@ -85,8 +85,7 @@ details[open] summary { color: #334155; margin-bottom: 4px; }
 .dneg { color: #dc2626; font-weight: 600; }
 .runtag { display: inline-block; padding: 2px 8px; border-radius: 3px;
           font-size: 11px; font-weight: 600; color: #fff; }
-.runtag.a { background: #2563eb; }
-.runtag.b { background: #9333ea; }
+.grp td { background: #e2e8f0; font-weight: 600; }
 .judge { background: #fff7ed; border-left: 3px solid #f59e0b; padding: 4px 8px;
          font-size: 12px; white-space: pre-wrap; word-break: break-word;
          font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -124,6 +123,7 @@ details[open] summary { color: #334155; margin-bottom: 4px; }
   .score-4, .score-5 { background: #14302a; }
   .dpos { color: #4ade80; }
   .dneg { color: #f87171; }
+  .grp td { background: #20242c; }
   .judge { background: #2a2113; color: #fde68a; }
   .meta-btn { background: #1e1b4b; color: #a5b4fc; }
   .meta-btn:hover { background: #312e81; }
@@ -257,7 +257,7 @@ def overview():
           <td class="num"><a href="/av/run/{r['run_id']}/recog">{r['n_recog']}</a></td>
           <td class="num"><a href="/av/run/{r['run_id']}/open_ended">{r['n_open']}</a></td>
           <td class="num"><a href="/av/run/{r['run_id']}">{r['n_metrics']}</a></td>
-          <td><a href="/av/compare?a={r['run_id']}">cmp</a></td>
+          <td><a href="/av/compare?runs={r['run_id']}">cmp</a></td>
         </tr>""")
 
     if trs:
@@ -312,7 +312,7 @@ def run_detail(run_id: int):
     links = (f'<div class="controls">'
              f'<a href="/av/run/{run_id}/recog">recog examples ({n_recog})</a>'
              f'<a href="/av/run/{run_id}/open_ended">open-ended examples ({n_open})</a>'
-             f'<a href="/av/compare?a={run_id}">compare against another run / baseline &rarr;</a>'
+             f'<a href="/av/compare?runs={run_id}">compare against other runs / baselines &rarr;</a>'
              f'</div>')
 
     if metrics:
@@ -753,7 +753,7 @@ def api_oe_meta_score():
 
 
 # ============================================================
-#  Route 4c: compare two runs (A vs B, where B is often a baseline)
+#  Route 4c: compare runs (N runs, deltas vs a designated baseline)
 # ============================================================
 # Reference/baseline runs — the published Adam Karvonen verbalizers and the
 # nanoNLA full fine-tune that the comparison evals (avbench_recog_violin,
@@ -764,9 +764,10 @@ _BASELINE_SQL = (r"(label ILIKE '%%ref\_%%' OR label ILIKE '%%nanonla%%' "
                  r"OR checkpoint ILIKE '%%adamkarvonen%%' "
                  r"OR checkpoint ILIKE '%%nanonla%%')")
 
-# Shared-example join keys: recog rows match on (suite, task, tier, entry)
-# where entry prefers the stable entry_id over the per-run sampling index;
-# open-ended rows match on (eval_name, mode, example_idx).
+# Movers drill-down (exactly-two-runs mode) shared-example join keys: recog
+# rows match on (suite, task, tier, entry) where entry prefers the stable
+# entry_id over the per-run sampling index; open-ended rows match on
+# (eval_name, mode, example_idx).
 _RECOG_JOIN = (
     "JOIN recog_examples b ON b.run_id = %s "
     "AND b.suite = a.suite AND b.task = a.task AND b.tier = a.tier "
@@ -786,8 +787,16 @@ def _fmt_delta(d, digits: int = 3) -> str:
     return f'<span class="{cls}">{d:+.{digits}f}</span>'
 
 
-def _run_option(r, selected_id) -> str:
-    sel = " selected" if r["run_id"] == selected_id else ""
+def _runtag(run_id: int, idx: int, base_id: int) -> str:
+    """Colored chip identifying a run; the baseline gets a neutral chip."""
+    if run_id == base_id:
+        return f'<span class="runtag" style="background:#475569">#{run_id} base</span>'
+    return (f'<span class="runtag" style="background:hsl({(idx * 67) % 360},55%,42%)">'
+            f'#{run_id}</span>')
+
+
+def _run_option(r, selected_ids) -> str:
+    sel = " selected" if r["run_id"] in selected_ids else ""
     base = " [baseline]" if r["is_baseline"] else ""
     label = r["label"] or r["checkpoint"]
     return (f'<option value="{r["run_id"]}"{sel}>'
@@ -797,118 +806,161 @@ def _run_option(r, selected_id) -> str:
 
 @av.route("/compare")
 def compare():
-    a_id = request.args.get("a", type=int)
-    b_id = request.args.get("b", type=int)
+    # ?runs= repeats and/or comma-joins; ?base= designates the delta reference
+    # (auto: first baseline among the selection, else the first selected).
+    run_ids: list[int] = []
+    for v in request.args.getlist("runs"):
+        for tok in v.split(","):
+            if tok.strip().isdigit() and int(tok) not in run_ids:
+                run_ids.append(int(tok))
+    base_id = request.args.get("base", type=int)
+    if base_id and base_id not in run_ids:
+        run_ids.append(base_id)
 
     db = _conn()
     try:
-        runs = db.query(f"""
+        runs_all = db.query(f"""
             SELECT run_id, checkpoint, label, source, model_name, created_at,
                    {_BASELINE_SQL} AS is_baseline
             FROM eval_runs r
             ORDER BY created_at DESC
         """)
-        by_id = {r["run_id"]: r for r in runs}
-        # Default B: the most recent baseline run (that isn't A).
-        if b_id is None:
-            b_id = next((r["run_id"] for r in runs
-                         if r["is_baseline"] and r["run_id"] != a_id), None)
+        by_id = {r["run_id"]: r for r in runs_all}
+        selected = [by_id[i] for i in run_ids if i in by_id]
+        run_ids = [r["run_id"] for r in selected]
+        if base_id not in run_ids:
+            base_id = None
+        if base_id is None and selected:
+            base_id = next((r["run_id"] for r in selected if r["is_baseline"]),
+                           selected[0]["run_id"])
 
-        run_a = by_id.get(a_id)
-        run_b = by_id.get(b_id)
         sections = ""
-        if run_a and run_b and a_id != b_id:
-            metrics = db.query("""
-                SELECT metric_key, ma.value AS va, mb.value AS vb
-                FROM (SELECT metric_key, value FROM metrics WHERE run_id = %s) ma
-                FULL OUTER JOIN
-                     (SELECT metric_key, value FROM metrics WHERE run_id = %s) mb
-                USING (metric_key)
-                ORDER BY metric_key
-            """, (a_id, b_id))
-            recog_tasks = db.query(f"""
-                SELECT a.suite, a.task, a.tier, count(*) AS n,
-                       avg(a.p_correct) AS pa, avg(b.p_correct) AS pb,
-                       avg(a.p_correct - b.p_correct) AS d
-                FROM recog_examples a {_RECOG_JOIN}
-                WHERE a.run_id = %s
-                GROUP BY a.suite, a.task, a.tier
-                ORDER BY a.suite, a.task, a.tier
-            """, (b_id, a_id))
-            recog_movers = db.query(f"""
-                SELECT a.suite, a.task, a.tier, a.example_idx, a.entry_id,
-                       a.p_correct AS pa, b.p_correct AS pb,
-                       a.p_correct - b.p_correct AS d,
-                       a.correct_response, a.incorrect_plausible_response
-                FROM recog_examples a {_RECOG_JOIN}
-                WHERE a.run_id = %s
-                ORDER BY abs(a.p_correct - b.p_correct) DESC
-                LIMIT 40
-            """, (b_id, a_id))
-            oe_evals = db.query(f"""
-                SELECT a.eval_name, a.mode, count(*) AS n,
-                       avg(a.score) AS sa, avg(b.score) AS sb,
-                       avg(a.score - b.score) AS d
-                FROM open_ended_examples a {_OE_JOIN}
-                WHERE a.run_id = %s
-                GROUP BY a.eval_name, a.mode
-                ORDER BY a.eval_name, a.mode
-            """, (b_id, a_id))
-            oe_movers = db.query(f"""
-                SELECT a.eval_name, a.mode, a.example_idx,
-                       a.score AS sa, b.score AS sb, a.score - b.score AS d,
-                       a.prompt, a.generation AS gen_a, b.generation AS gen_b,
-                       a.target
-                FROM open_ended_examples a {_OE_JOIN}
-                WHERE a.run_id = %s
-                  AND a.score IS NOT NULL AND b.score IS NOT NULL
-                ORDER BY abs(a.score - b.score) DESC
-                LIMIT 30
-            """, (b_id, a_id))
+        if len(selected) >= 2:
+            ph = ",".join(["%s"] * len(run_ids))
+            mets = db.query(
+                f"SELECT run_id, metric_key, value FROM metrics "
+                f"WHERE run_id IN ({ph})", tuple(run_ids))
+            recog = db.query(
+                f"SELECT run_id, suite, task, tier, "
+                f"COALESCE(entry_id, example_idx::text) AS entry, p_correct "
+                f"FROM recog_examples WHERE run_id IN ({ph})", tuple(run_ids))
+            oe = db.query(
+                f"SELECT run_id, eval_name, mode, example_idx, score "
+                f"FROM open_ended_examples WHERE run_id IN ({ph})",
+                tuple(run_ids))
+            movers_html = ""
+            if len(selected) == 2:
+                a_id = next(i for i in run_ids if i != base_id)
+                movers_html = _render_movers(db, a_id, base_id)
             sections = _render_compare_sections(
-                run_a, run_b, metrics, recog_tasks, recog_movers,
-                oe_evals, oe_movers)
+                selected, run_ids, base_id, mets, recog, oe, movers_html)
     finally:
         db.close()
 
-    # Picker: baselines first, then the rest (recency order within groups).
-    base_opts = "".join(_run_option(r, b_id) for r in runs if r["is_baseline"])
-    run_opts_a = "".join(_run_option(r, a_id) for r in runs)
-    run_opts_b = "".join(_run_option(r, b_id) for r in runs if not r["is_baseline"])
+    base_opts = "".join(_run_option(r, run_ids) for r in runs_all if r["is_baseline"])
+    other_opts = "".join(_run_option(r, run_ids) for r in runs_all if not r["is_baseline"])
+    bsel_opts = "".join(
+        f'<option value="{r["run_id"]}"{" selected" if r["run_id"] == base_id else ""}>'
+        f'#{r["run_id"]} &middot; {_e(r["label"] or r["checkpoint"])}</option>'
+        for r in selected)
+    size = min(14, max(4, len(runs_all)))
     picker = f"""
     <div class="controls">
       <form method="get">
-        <label><span class="runtag a">A</span> run:
-          <select name="a" onchange="this.form.submit()">
-            <option value="">(pick run A)</option>{run_opts_a}
-          </select></label>
-        <label><span class="runtag b">B</span> reference:
-          <select name="b" onchange="this.form.submit()">
-            <option value="">(pick run B / baseline)</option>
+        <label style="vertical-align:top">runs (ctrl/cmd-click for several):<br>
+          <select name="runs" multiple size="{size}">
             <optgroup label="baselines / references">{base_opts}</optgroup>
-            <optgroup label="other runs">{run_opts_b}</optgroup>
+            <optgroup label="runs">{other_opts}</optgroup>
           </select></label>
-        <noscript><button type="submit">Compare</button></noscript>
+        <label>&Delta; baseline:<br>
+          <select name="base">
+            <option value="">(auto: first baseline selected)</option>
+            {bsel_opts}
+          </select></label>
+        <button type="submit">Compare</button>
       </form>
-      {f'<a href="/av/compare?a={b_id}&b={a_id}">&#8646; swap</a>' if run_a and run_b else ''}
     </div>"""
 
-    if not (run_a and run_b):
-        body = picker + _empty("Pick run A and a reference run B "
-                               "(baselines are grouped at the top).")
-    elif a_id == b_id:
-        body = picker + _empty("A and B are the same run — pick two "
-                               "different runs.")
+    if len(selected) < 2:
+        body = picker + _empty(
+            "Select two or more runs to compare (baselines are grouped at "
+            "the top; deltas are taken against the designated baseline).")
     else:
         body = picker + sections
     return _page("Compare runs", f"<h2>Compare runs</h2>{body}")
 
 
-def _render_compare_sections(run_a, run_b, metrics, recog_tasks,
-                             recog_movers, oe_evals, oe_movers) -> str:
-    def _runline(tag, r):
-        base = ' <span class="pill">baseline</span>' if r["is_baseline"] else ""
-        return (f'<tr><td><span class="runtag {tag.lower()}">{tag}</span></td>'
+def _grouped_table(selected, run_ids, base_id, per_group, value_hdr,
+                   bar_scale, digits=4):
+    """Render macro-row groups: a shaded header per group, then one sub-row
+    per run with mean value + delta vs the baseline run. `per_group` maps
+    group key -> {run_id -> {entry -> value}}; within a group only entries
+    covered by EVERY run that has the group are compared."""
+    by_id = {r["run_id"]: r for r in selected}
+    idx_of = {rid: i for i, rid in enumerate(run_ids)}
+    rows = []
+    # strict overall: entries shared by ALL selected runs, across all groups.
+    overall = {rid: [] for rid in run_ids}
+    overall_n = 0
+    for key in sorted(per_group):
+        g = per_group[key]
+        runs_here = [rid for rid in run_ids if rid in g]
+        if len(runs_here) < 2:
+            continue
+        shared = set.intersection(*(set(g[rid]) for rid in runs_here))
+        if not shared:
+            continue
+        if len(runs_here) == len(run_ids):
+            overall_n += len(shared)
+            for rid in runs_here:
+                overall[rid].extend(g[rid][e] for e in shared)
+        means = {rid: sum(g[rid][e] for e in shared) / len(shared)
+                 for rid in runs_here}
+        rows.append(
+            f'<tr class="grp"><td colspan="4">{" &middot; ".join(_e(k) for k in key)}'
+            f' <span class="muted">n={len(shared)} shared &middot; '
+            f'{len(runs_here)}/{len(run_ids)} runs</span></td></tr>')
+        for rid in runs_here:
+            m = means[rid]
+            barw = int(round(max(0.0, min(1.0, m / bar_scale)) * 80))
+            delta = ("" if rid == base_id or base_id not in means
+                     else _fmt_delta(m - means[base_id], digits - 1))
+            rows.append(
+                f'<tr><td>{_runtag(rid, idx_of[rid], base_id)} '
+                f'{_e(by_id[rid]["label"] or by_id[rid]["checkpoint"])}</td>'
+                f'<td class="num">{_fmt_num(m, digits)}</td>'
+                f'<td><span class="bar" style="width:{barw}px"></span></td>'
+                f'<td class="num">{delta}</td></tr>')
+    if not rows:
+        return None
+    head = (f'<tr><th>run</th><th>{value_hdr}</th><th></th>'
+            f'<th>&Delta; vs base</th></tr>')
+    table = f"<table>{head}{''.join(rows)}</table>"
+    if overall_n:
+        olines = []
+        base_mean = (sum(overall[base_id]) / len(overall[base_id])
+                     if overall.get(base_id) else None)
+        for rid in run_ids:
+            if not overall[rid]:
+                continue
+            m = sum(overall[rid]) / len(overall[rid])
+            d = ("" if rid == base_id or base_mean is None
+                 else " " + _fmt_delta(m - base_mean, digits - 1))
+            olines.append(f'{_runtag(rid, idx_of[rid], base_id)} '
+                          f'{_fmt_num(m, digits)}{d}')
+        table = (f'<p class="muted">strict intersection over all '
+                 f'{len(run_ids)} runs ({overall_n} examples): '
+                 f'{" &nbsp; ".join(olines)}</p>') + table
+    return table
+
+
+def _render_compare_sections(selected, run_ids, base_id, mets, recog, oe,
+                             movers_html) -> str:
+    idx_of = {rid: i for i, rid in enumerate(run_ids)}
+
+    def _runline(r):
+        base = (' <span class="pill">baseline</span>' if r["is_baseline"] else "")
+        return (f'<tr><td>{_runtag(r["run_id"], idx_of[r["run_id"]], base_id)}</td>'
                 f'<td><a href="/av/run/{r["run_id"]}">#{r["run_id"]}</a></td>'
                 f'<td>{_e(r["label"])}{base}</td>'
                 f'<td><span class="pill">{_e(r["source"])}</span></td>'
@@ -918,43 +970,94 @@ def _render_compare_sections(run_a, run_b, metrics, recog_tasks,
     head = f"""<table>
       <tr><th></th><th>run</th><th>label</th><th>source</th><th>model</th>
           <th>checkpoint</th><th>created (UTC)</th></tr>
-      {_runline("A", run_a)}{_runline("B", run_b)}
+      {''.join(_runline(r) for r in selected)}
     </table>"""
 
-    # --- aggregate metrics ---
-    if metrics:
-        mrows = "".join(
-            f'<tr><td><code>{_e(m["metric_key"])}</code></td>'
-            f'<td class="num">{_fmt_num(m["va"], 5)}</td>'
-            f'<td class="num">{_fmt_num(m["vb"], 5)}</td>'
-            f'<td class="num">{_fmt_delta(m["va"] - m["vb"], 4) if m["va"] is not None and m["vb"] is not None else ""}</td></tr>'
-            for m in metrics)
-        mtable = (f'<table><tr><th>metric_key</th><th>A</th><th>B</th>'
-                  f'<th>&Delta; (A&minus;B)</th></tr>{mrows}</table>')
+    # --- aggregate metrics: metric rows x run columns, delta vs base ---
+    vals = {}
+    for m in mets:
+        vals.setdefault(m["metric_key"], {})[m["run_id"]] = m["value"]
+    if vals:
+        cols = "".join(f'<th>{_runtag(rid, idx_of[rid], base_id)}</th>'
+                       for rid in run_ids)
+        mrows = []
+        for mk in sorted(vals):
+            tds = [f'<td><code>{_e(mk)}</code></td>']
+            bv = vals[mk].get(base_id)
+            for rid in run_ids:
+                v = vals[mk].get(rid)
+                if v is None:
+                    tds.append('<td class="num"></td>')
+                    continue
+                d = ("" if rid == base_id or bv is None
+                     else f' <span class="muted">{_fmt_delta(v - bv)}</span>')
+                tds.append(f'<td class="num">{_fmt_num(v, 4)}{d}</td>')
+            mrows.append(f'<tr>{"".join(tds)}</tr>')
+        mtable = (f'<table><tr><th>metric_key</th>{cols}</tr>'
+                  f'{"".join(mrows)}</table>')
     else:
-        mtable = _empty("Neither run has aggregate metrics.")
+        mtable = _empty("No aggregate metrics on the selected runs.")
 
-    # --- recog: per-(suite, task, tier) means over SHARED examples ---
-    if recog_tasks:
-        tot_n = sum(r["n"] for r in recog_tasks)
-        tot_pa = sum(r["pa"] * r["n"] for r in recog_tasks) / tot_n
-        tot_pb = sum(r["pb"] * r["n"] for r in recog_tasks) / tot_n
-        rrows = "".join(
-            f'<tr><td>{_e(r["suite"])}</td><td>{_e(r["task"])}</td>'
-            f'<td><span class="pill">{_e(r["tier"])}</span></td>'
-            f'<td class="num">{r["n"]}</td>'
-            f'<td class="num">{_fmt_num(r["pa"])}</td>'
-            f'<td class="num">{_fmt_num(r["pb"])}</td>'
-            f'<td class="num">{_fmt_delta(r["d"])}</td></tr>'
-            for r in recog_tasks)
-        rrows += (f'<tr><th colspan="3">overall (shared examples)</th>'
-                  f'<th class="num">{tot_n}</th>'
-                  f'<th class="num">{_fmt_num(tot_pa)}</th>'
-                  f'<th class="num">{_fmt_num(tot_pb)}</th>'
-                  f'<th class="num">{_fmt_delta(tot_pa - tot_pb)}</th></tr>')
-        rtable = (f'<table><tr><th>suite</th><th>task</th><th>tier</th>'
-                  f'<th>n</th><th>p_correct A</th><th>p_correct B</th>'
-                  f'<th>&Delta;</th></tr>{rrows}</table>')
+    # --- recog: macro-row per (suite, task, tier), sub-row per run ---
+    rg = {}
+    for r in recog:
+        rg.setdefault((r["suite"], r["task"], r["tier"]), {}) \
+          .setdefault(r["run_id"], {})[r["entry"]] = float(r["p_correct"])
+    rtable = _grouped_table(selected, run_ids, base_id, rg,
+                            "p_correct", bar_scale=1.0)
+    rtable = rtable or _empty("No recog tasks shared by two or more of the "
+                              "selected runs.")
+
+    # --- open-ended: macro-row per (eval_name, mode), sub-row per run ---
+    og = {}
+    for r in oe:
+        if r["score"] is None:
+            continue
+        og.setdefault((r["eval_name"], r["mode"] or "(none)"), {}) \
+          .setdefault(r["run_id"], {})[r["example_idx"]] = float(r["score"])
+    otable = _grouped_table(selected, run_ids, base_id, og,
+                            "score", bar_scale=5.0, digits=3)
+    otable = otable or _empty("No open-ended evals shared by two or more of "
+                              "the selected runs.")
+
+    if not movers_html and len(selected) > 2:
+        movers_html = ('<p class="muted">Per-example mover drill-downs show '
+                       'when exactly two runs are selected.</p>')
+
+    return (f'{head}'
+            f'<h2>Aggregate metrics</h2>{mtable}'
+            f'<h2>Recog &mdash; shared examples</h2>{rtable}'
+            f'<h2>Open-ended &mdash; shared examples</h2>{otable}'
+            f'{movers_html}')
+
+
+def _render_movers(db, a_id: int, base_id: int) -> str:
+    """Two-run mode: per-example drill-downs, biggest |delta| first
+    (A = the non-baseline run, B = the designated baseline)."""
+    recog_movers = db.query(f"""
+        SELECT a.suite, a.task, a.tier, a.example_idx, a.entry_id,
+               a.p_correct AS pa, b.p_correct AS pb,
+               a.p_correct - b.p_correct AS d,
+               a.correct_response, a.incorrect_plausible_response
+        FROM recog_examples a {_RECOG_JOIN}
+        WHERE a.run_id = %s
+        ORDER BY abs(a.p_correct - b.p_correct) DESC
+        LIMIT 40
+    """, (base_id, a_id))
+    oe_movers = db.query(f"""
+        SELECT a.eval_name, a.mode, a.example_idx,
+               a.score AS sa, b.score AS sb, a.score - b.score AS d,
+               a.prompt, a.generation AS gen_a, b.generation AS gen_b,
+               a.target
+        FROM open_ended_examples a {_OE_JOIN}
+        WHERE a.run_id = %s
+          AND a.score IS NOT NULL AND b.score IS NOT NULL
+        ORDER BY abs(a.score - b.score) DESC
+        LIMIT 30
+    """, (base_id, a_id))
+
+    out = ""
+    if recog_movers:
         mv = "".join(
             f'<tr><td>{_e(r["suite"])}</td><td>{_e(r["task"])}</td>'
             f'<td><span class="pill">{_e(r["tier"])}</span></td>'
@@ -965,29 +1068,14 @@ def _render_compare_sections(run_a, run_b, metrics, recog_tasks,
             f'<td class="pre">{_e(r["correct_response"])}</td>'
             f'<td class="pre">{_e(r["incorrect_plausible_response"])}</td></tr>'
             for r in recog_movers)
-        rmovers = f"""<details><summary>biggest recog movers
-          (top {len(recog_movers)} by |&Delta;p_correct|)</summary>
+        out += f"""<details><summary>biggest recog movers
+          (#{a_id} vs base #{base_id}, top {len(recog_movers)} by
+          |&Delta;p_correct|)</summary>
           <table><tr><th>suite</th><th>task</th><th>tier</th><th>entry</th>
-            <th>p_corr A</th><th>p_corr B</th><th>&Delta;</th>
+            <th>p_corr A</th><th>p_corr base</th><th>&Delta;</th>
             <th>correct_response</th><th>incorrect_plausible</th></tr>
           {mv}</table></details>"""
-    else:
-        rtable = _empty("No shared recog examples between these runs.")
-        rmovers = ""
-
-    # --- open-ended: per-(eval_name, mode) means over SHARED examples ---
-    if oe_evals:
-        orows = "".join(
-            f'<tr><td>{_e(r["eval_name"])}</td>'
-            f'<td>{_e(r["mode"] or "(none)")}</td>'
-            f'<td class="num">{r["n"]}</td>'
-            f'<td class="num">{_fmt_num(r["sa"])}</td>'
-            f'<td class="num">{_fmt_num(r["sb"])}</td>'
-            f'<td class="num">{_fmt_delta(r["d"], 2)}</td></tr>'
-            for r in oe_evals)
-        otable = (f'<table><tr><th>eval_name</th><th>mode</th><th>n</th>'
-                  f'<th>score A</th><th>score B</th><th>&Delta;</th></tr>'
-                  f'{orows}</table>')
+    if oe_movers:
         omv = []
         for r in oe_movers:
             omv.append(f"""<tr>
@@ -998,26 +1086,20 @@ def _render_compare_sections(run_a, run_b, metrics, recog_tasks,
               <td class="num">{_fmt_delta(r["d"], 2)}</td>
               <td class="pre"><details><summary>A generation</summary>
                   <div class="pre">{_e(r["gen_a"])}</div></details>
-                  <details><summary>B generation</summary>
+                  <details><summary>base generation</summary>
                   <div class="pre">{_e(r["gen_b"])}</div></details></td>
               <td class="pre"><details><summary>target</summary>
                   <div class="pre">{_e(r["target"])}</div></details>
                   <details><summary>prompt</summary>
                   <div class="pre">{_e(r["prompt"])}</div></details></td>
             </tr>""")
-        omovers = f"""<details><summary>biggest open-ended movers
-          (top {len(oe_movers)} by |&Delta;score|)</summary>
-          <table><tr><th>eval_name</th><th>idx</th><th>A</th><th>B</th>
+        out += f"""<details><summary>biggest open-ended movers
+          (#{a_id} vs base #{base_id}, top {len(oe_movers)} by
+          |&Delta;score|)</summary>
+          <table><tr><th>eval_name</th><th>idx</th><th>A</th><th>base</th>
             <th>&Delta;</th><th>generations</th><th>target / prompt</th></tr>
           {"".join(omv)}</table></details>"""
-    else:
-        otable = _empty("No shared open-ended examples between these runs.")
-        omovers = ""
-
-    return (f'{head}'
-            f'<h2>Aggregate metrics</h2>{mtable}'
-            f'<h2>Recog &mdash; shared examples</h2>{rtable}{rmovers}'
-            f'<h2>Open-ended &mdash; shared examples</h2>{otable}{omovers}')
+    return out
 
 
 # ============================================================
