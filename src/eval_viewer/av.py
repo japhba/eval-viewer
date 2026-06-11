@@ -673,7 +673,8 @@ def _cluster_score_cached(key: tuple, vp: str, correct: str,
            "precision": _01(obj.get("precision")),
            "digest": str(obj.get("digest") or text.strip()),
            "n_rollouts": len(rollouts), "judge_model": model}
-    _CLUSTER_SCORE_CACHE[key] = out
+    if out["trueness"] is not None or out["precision"] is not None:
+        _CLUSTER_SCORE_CACHE[key] = out  # unparsed scores aren't cached — retry on reload
     return out
 
 
@@ -731,7 +732,8 @@ def _item_fields(rows: list[dict]) -> tuple[str, str, str]:
 # (context_activations would pin ~100MB of CODI floats).
 _AVBENCH_IDX: dict[tuple[str, str], list[dict]] | None = None
 _AVBENCH_FIELDS = ("transcript", "context", "context_char_span",
-                   "verbalizer_prompt", "correct_response",
+                   "verbalizer_prompt", "verbalizer_prompt_narrow",
+                   "verbalizer_prompt_broad", "correct_response",
                    "incorrect_plausible_response", "model_organism")
 
 
@@ -749,7 +751,9 @@ def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
                     "SELECT suite, task, example_idx, transcript, context, "
                     "span_start, span_end, verbalizer_prompt, correct_response, "
                     "incorrect_plausible_response, token_exact, model_organism, "
-                    "n_latents FROM avbench_items ORDER BY suite, task, example_idx")
+                    "n_latents, verbalizer_prompt_narrow, "
+                    "verbalizer_prompt_broad "
+                    "FROM avbench_items ORDER BY suite, task, example_idx")
             finally:
                 db.close()
             for r in rows:
@@ -759,6 +763,8 @@ def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
                     "transcript": r["transcript"], "context": r["context"],
                     "context_char_span": span,
                     "verbalizer_prompt": r["verbalizer_prompt"],
+                    "verbalizer_prompt_narrow": r["verbalizer_prompt_narrow"],
+                    "verbalizer_prompt_broad": r["verbalizer_prompt_broad"],
                     "correct_response": r["correct_response"],
                     "incorrect_plausible_response": r["incorrect_plausible_response"],
                     "model_organism": r["model_organism"],
@@ -891,7 +897,7 @@ def _violin_svg(values, lo: float = 0.0, hi: float = 1.0,
         return ""
     rng = hi - lo if hi > lo else 1.0
     x = np.linspace(lo, hi, 60)
-    bw = max(0.04 * rng, float(v.std()) * (v.size ** -0.2))
+    bw = 0.05 * rng  # short fixed kernel (CLAUDE.md), not Scott/Silverman
     d = np.exp(-0.5 * ((x[:, None] - v[None, :]) / bw) ** 2).sum(axis=1)
     if d.max() > 0:
         d = d / d.max()
@@ -899,9 +905,16 @@ def _violin_svg(values, lo: float = 0.0, hi: float = 1.0,
     xs = (x - lo) / rng * (w - 2) + 1
     pts = ([f"{xs[i]:.1f},{mid - d[i] * amp:.1f}" for i in range(len(x))]
            + [f"{xs[i]:.1f},{mid + d[i] * amp:.1f}" for i in reversed(range(len(x)))])
-    mean_x = (float(v.mean()) - lo) / rng * (w - 2) + 1
+    px = lambda val: (float(val) - lo) / rng * (w - 2) + 1
+    q1, med, q3 = (px(q) for q in np.percentile(v, [25, 50, 75]))
+    mean_x = px(v.mean())
+    bh = max(3.0, (h - 2) * 0.28)  # thin quartile box around the midline
     return (f'<svg class="vio" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
             f'<polygon points="{" ".join(pts)}" fill="#60a5fa" opacity="0.55"/>'
+            f'<rect x="{q1:.1f}" y="{mid - bh / 2:.1f}" width="{max(q3 - q1, 0.8):.1f}" '
+            f'height="{bh:.1f}" fill="none" stroke="#64748b" stroke-width="1"/>'
+            f'<line x1="{med:.1f}" y1="{mid - bh / 2:.1f}" x2="{med:.1f}" '
+            f'y2="{mid + bh / 2:.1f}" stroke="#64748b" stroke-width="1.5"/>'
             f'<line x1="{mean_x:.1f}" y1="2" x2="{mean_x:.1f}" y2="{h - 2}" '
             f'stroke="#f59e0b" stroke-width="1.5"/></svg>')
 
@@ -941,7 +954,9 @@ def compare():
                        run_ids[0] if run_ids else None)
 
         sel_eval = request.args.get("eval") or ""
+        sel_variant = request.args.get("variant") or "specific"
         eval_names: list[str] = []
+        avail_variants: list[str] = []
         sections = ""
         if len(selected) >= 2:
             ph = ",".join(["%s"] * len(run_ids))
@@ -959,7 +974,25 @@ def compare():
                     f"WHERE run_id IN ({ph}) AND eval_name = %s "
                     f"ORDER BY example_idx, run_id, mode",
                     tuple(run_ids) + (sel_eval,))
-                sections = _render_items(selected, run_ids, base_id, rows)
+                # Prompt-specificity variants are encoded as mode prefixes:
+                # "r0.." = specific, "cond.r0" = conditional, "unsp.r0" =
+                # unspecific (see judge_oe_rollouts). The toggle only shows
+                # when this eval actually carries variant rows.
+                _VPREFIX = {"narrow": "narrow.", "broad": "broad."}
+                avail_variants = ["specific"] + [
+                    v for v, p in _VPREFIX.items()
+                    if any(r["mode"].startswith(p) for r in rows)]
+                if sel_variant not in avail_variants:
+                    sel_variant = "specific"
+                pfx = _VPREFIX.get(sel_variant)
+                rows = [r for r in rows
+                        if (r["mode"].startswith(pfx) if pfx else
+                            not any(r["mode"].startswith(p) for p in _VPREFIX.values()))]
+                sections = (_render_items(selected, run_ids, base_id, rows,
+                                          variant=sel_variant)
+                            if rows else
+                            _empty(f"No {sel_variant!r}-variant rows for this "
+                                   f"eval on the selected runs."))
             else:
                 sections = _empty("The selected runs have no open-ended rows.")
     finally:
@@ -986,6 +1019,12 @@ def compare():
         for en in eval_names)
     eval_sel = (f'<label>eval: <select name="eval">{eval_opts}</select></label>'
                 if eval_names else "")
+    if len(avail_variants) > 1:
+        vopts = "".join(
+            f'<option value="{v}"{" selected" if v == sel_variant else ""}>{v}</option>'
+            for v in avail_variants)
+        eval_sel += (f' <label title="prompt-specificity tier (organism tasks)">'
+                     f'prompt variant: <select name="variant">{vopts}</select></label>')
     hidden_all = '<input type="hidden" name="all" value="1">' if show_all else ""
     picker = f"""
     <div class="controls">
@@ -1008,7 +1047,7 @@ def compare():
     return _page("Compare runs", f"<h2>Compare runs</h2>{body}")
 
 
-def _render_items(selected, run_ids, base_id, rows) -> str:
+def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -> str:
     """One macro-row per eval item: context / verbalizer_prompt /
     correct_response cells span the item's block; one sub-row per method
     (run) carrying the on-demand cluster scorer; one sub-sub-row per
@@ -1057,19 +1096,26 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                'per method (normalized 0-1, amber tick = mean):</span> '
                + " ".join(strip) + "</div>") if strip else ""
 
+    def _variant_vp(av) -> str | None:
+        if av is None:
+            return None
+        if variant != "specific":
+            return av.get(f"verbalizer_prompt_{variant}") or av.get("verbalizer_prompt")
+        return av.get("verbalizer_prompt")
+
     # Cluster cards render by default: precompute every (method, item) block
     # concurrently (self-hosted judge — concurrency is fine; in-process cache
-    # makes reloads free).
+    # makes reloads free). Keys carry the variant — the same item judged
+    # under different prompt tiers is a different cluster.
     from concurrent.futures import ThreadPoolExecutor
     jobs: list[tuple[tuple, str, str, list[dict]]] = []
     for idx, by_run in ordered:
         av = _av_row(eval_name, idx)
-        vp_j = (av or {}).get("verbalizer_prompt") or _item_fields(
-            by_run[next(iter(by_run))])[1]
+        vp_j = _variant_vp(av) or _item_fields(by_run[next(iter(by_run))])[1]
         cr_j = (av or {}).get("correct_response") or _item_fields(
             by_run[next(iter(by_run))])[2]
         for rid in by_run:
-            jobs.append(((rid, eval_name, idx), vp_j, cr_j, by_run[rid]))
+            jobs.append(((rid, eval_name, idx, variant), vp_j, cr_j, by_run[rid]))
     cards: dict[tuple, dict] = {}
     with ThreadPoolExecutor(max_workers=16) as ex:
         for (key, *_), res in zip(jobs, ex.map(lambda j: _cluster_score_cached(*j), jobs)):
@@ -1088,11 +1134,16 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
         if av:
             tx_cell = _transcript_html(av)
             ctx_cell = _context_html(av)
-            vp = av["verbalizer_prompt"] or vp
+            vp = _variant_vp(av) or vp
             correct = av["correct_response"] or correct
         else:
             tx_cell = _long_text(ctx, 400)
             ctx_cell = _long_text(ctx, 200)
+        vp_note = ""
+        if variant == "broad" and any("nanonla" in (names.get(r) or "")
+                                           for r in methods):
+            vp_note = ('<div class="muted">(nanoNLA verbalizes with an EMPTY '
+                       'prompt at this tier — its native promptless mode)</div>')
         first_item_row = True
         for rid in methods:
             rollouts = sorted(by_run[rid], key=lambda x: x["mode"])
@@ -1104,7 +1155,7 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                 f'<td rowspan="{len(rollouts)}">'
                 f'{_runtag(rid, idx_of[rid], base_id, names[rid])}'
                 f'{mv_svg}'
-                f'{_cluster_card(cards.get((rid, eval_name, idx)))}</td>')
+                f'{_cluster_card(cards.get((rid, eval_name, idx, variant)))}</td>')
             first_method_row = True
             for ro in rollouts:
                 tds = []
@@ -1112,7 +1163,7 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                 if first_item_row:
                     tds.append(f'<td class="pre" rowspan="{total}">{tx_cell}</td>')
                     tds.append(f'<td class="pre" rowspan="{total}">{ctx_cell}</td>')
-                    tds.append(f'<td class="pre" rowspan="{total}">{_e(vp)}</td>')
+                    tds.append(f'<td class="pre" rowspan="{total}">{_e(vp)}{vp_note}</td>')
                 if first_method_row:
                     tds.append(method_cell)
                 mode_tag = (f' <span class="muted">{_e(ro["mode"])}</span>'
@@ -1134,18 +1185,18 @@ def _render_items(selected, run_ids, base_id, rows) -> str:
                 first_item_row = False
                 first_method_row = False
 
-    head = ('<tr><th style="width:20%" title="full text fed cold to the '
+    head = ('<tr><th title="full text fed cold to the '
             'subject model; the highlighted span is the context whose '
             'activations are read">transcript <span class="muted">(context '
             'highlighted)</span></th>'
-            '<th style="width:12%" title="the read window; highlighted = '
+            '<th title="the read window; highlighted = '
             'context_tokens, the tokens whose activations are injected">'
             'context <span class="muted">(context_tokens highlighted)</span></th>'
-            '<th style="width:13%">verbalizer_prompt</th>'
-            '<th style="width:10%">method</th>'
+            '<th>verbalizer_prompt</th>'
+            '<th>method</th>'
             '<th>verbalization(s) <span class="muted">(judge score &middot; '
             'judge reasoning in italics)</span></th>'
-            '<th style="width:11%">correct_response</th></tr>')
+            '<th>correct_response</th></tr>')
     note = (f'<p class="muted">{len(ordered)} items &middot; '
             f'{len(run_ids)} methods &middot; ordered by score spread '
             f'(most method disagreement first)</p>')
@@ -1176,10 +1227,14 @@ def api_item_cluster_score():
     if not rows:
         return jsonify({"error": "no rows for this cluster"}), 404
 
+    variant = request.args.get("variant") or "specific"
     av_row = _av_row(eval_name, example_idx)
-    vp = (av_row or {}).get("verbalizer_prompt") or _item_fields(rows)[1]
+    vp = ((av_row or {}).get(f"verbalizer_prompt_{variant}")
+          if variant != "specific" else None) \
+        or (av_row or {}).get("verbalizer_prompt") or _item_fields(rows)[1]
     correct = (av_row or {}).get("correct_response") or _item_fields(rows)[2]
-    res = _cluster_score_cached((run_id, eval_name, example_idx), vp, correct, rows)
+    res = _cluster_score_cached((run_id, eval_name, example_idx, variant),
+                                vp, correct, rows)
     return (jsonify(res), 502) if res.get("error") else jsonify(res)
 
 

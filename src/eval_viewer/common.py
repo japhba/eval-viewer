@@ -110,14 +110,80 @@ def haiku_call(system: str, user: str, *, max_tokens: int,
     return text, msg.usage
 
 
+def _json_candidates(text: str):
+    """Brace-BALANCED {...} substrings (string-aware), from each of the first
+    few '{'s — the old greedy regex grabbed first-{ to LAST-} and choked on
+    trailing prose; non-greedy truncates at the first nested '}'."""
+    starts = [i for i, c in enumerate(text) if c == "{"][:5]
+    for s in starts:
+        depth, in_str, esc = 0, False, False
+        for j in range(s, len(text)):
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[s:j + 1]
+                    break
+
+
+def _repair_json(s: str) -> str:
+    """Mechanical repairs for the judge's common failure modes: raw control
+    characters inside string values (newlines in multi-bullet digests) and
+    trailing commas."""
+    out, in_str, esc = [], False, False
+    for c in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            elif c == "\n":
+                out.append("\\n")
+                continue
+            elif c == "\t":
+                out.append("\\t")
+                continue
+            elif c == "\r":
+                continue
+        elif c == '"':
+            in_str = True
+        out.append(c)
+    return re.sub(r",\s*([}\]])", r"\1", "".join(out))
+
+
 def extract_json(text: str) -> dict | None:
-    """Tolerant JSON extraction — the model may wrap the object in fences or
-    prose. Returns None when no parseable object is found."""
-    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not m:
+    """Tolerant JSON extraction with a repair ladder — the model may wrap the
+    object in fences/prose, put raw newlines inside strings, leave trailing
+    commas, or get truncated mid-string. Returns None only when nothing
+    salvageable is found."""
+    if not text:
         return None
-    try:
-        obj = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
+    t = re.sub(r"^```(?:json)?\s*", "", text.strip())
+    t = re.sub(r"\s*```$", "", t)
+    candidates = list(_json_candidates(t))
+    if not candidates and "{" in t:
+        # truncated object (generation hit max_tokens mid-string): try closing it
+        stub = t[t.index("{"):]
+        candidates = [stub + '"}', stub + "}"]
+    for cand in candidates:
+        for attempt in (cand, _repair_json(cand)):
+            try:
+                obj = json.loads(attempt)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
