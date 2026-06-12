@@ -26,7 +26,7 @@ def _conn() -> Conn:
 _STYLE = """
 :root { color-scheme: light dark;
         /* user-adjustable via the floating display panel (localStorage) */
-        --pre-maxw: 520px; --cell-maxh: none; --tbl-fs: 13px; }
+        --pre-maxw: 360px; --cell-maxh: none; --tbl-fs: 13px; }
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
        margin: 0; line-height: 1.45; color: #1e293b; background: #fafafa; }
@@ -88,13 +88,42 @@ details[open] summary { color: #334155; margin-bottom: 4px; }
 .cmp-run { display: block; font-size: 13px; white-space: nowrap;
            overflow: hidden; text-overflow: ellipsis; }
 .vio { vertical-align: middle; }
+.vio circle.sina-d { fill: #1d4ed8; opacity: 0.75; }
+.vio circle.sina-pt { fill: #1d4ed8; opacity: 0.75; cursor: pointer; }
+.vio circle.sina-pt:hover { fill: #dc2626; opacity: 1; r: 3; }
+tr.flash > td { animation: rowflash 1.6s ease-out 1; }
+@keyframes rowflash { 0% { background-color: rgba(253, 224, 71, 0.75); }
+                      100% { background-color: transparent; } }
 .vio-strip { margin: 8px 0 2px; display: flex; flex-wrap: wrap; gap: 14px;
              align-items: center; font-size: 13px; }
 .vio-cell { white-space: nowrap; }
 tr.item-top td { border-top: 2px solid #94a3b8; }
 mark.ctx { background: #fde047; color: #422006; padding: 0 1px; border-radius: 2px; }
 mark.acttok { background: #c7d2fe; color: #1e1b4b; padding: 0 1px; border-radius: 2px; }
-.txbox { margin-top: 3px; max-height: var(--cell-maxh); overflow-y: auto; }
+.txbox { margin-top: 3px; max-height: var(--cell-maxh); overflow-y: auto;
+         resize: vertical; min-height: 1.5em; }
+#cmp-items { table-layout: fixed; width: max-content; min-width: 100%; }
+#cmp-items th.w-var { width: var(--pre-maxw); }
+#cmp-items th.w-method { width: 180px; }
+#cmp-items td.pre { max-width: none; height: 1px; }
+/* boxes fill the cell's full vertical extent (height:1px on the td
+   makes percentage heights resolvable; the row stretches it); per-rollout
+   (non-spanning) boxes follow the collective --row-h set by dragging any
+   row's lower edge */
+#cmp-items td.pre[rowspan] > .txbox { height: calc(100% - 6px); }
+#cmp-items td.pre:not([rowspan]) > .txbox { height: var(--row-h, auto); }
+#cmp-items th { position: relative; }
+.col-grip { position: absolute; top: 0; right: -4px; width: 8px; height: 100%;
+            cursor: col-resize; user-select: none; z-index: 5; }
+.col-grip:hover, .col-grip.active { background: rgba(96, 165, 250, 0.45); }
+#cmp-items.hide-col-tx .col-tx { display: none; }
+#cmp-items.hide-col-ctx .col-ctx { display: none; }
+#cmp-items.hide-col-vp .col-vp { display: none; }
+#cmp-items.hide-col-method .col-method { display: none; }
+#cmp-items.hide-col-verb .col-verb { display: none; }
+#cmp-items.hide-col-corr .col-corr { display: none; }
+#cmp-items.hide-col-misc .col-misc { display: none; }
+.colcb { margin-right: 8px; white-space: nowrap; }
 .disp-ctl { position: fixed; right: 14px; bottom: 14px; z-index: 50;
             background: #fff; border: 1px solid #cbd5e1; border-radius: 8px;
             padding: 6px 10px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
@@ -194,7 +223,7 @@ def _page(title: str, body: str) -> str:
 </details>
 <script>
 (function() {{
-  const DEF = {{w: 520, h: 1220, f: 13}};  // h at max = unlimited
+  const DEF = {{w: 360, h: 1220, f: 13}};  // h at max = unlimited
   const rs = document.documentElement.style;
   const el = (id) => document.getElementById(id);
   function apply(s) {{
@@ -220,6 +249,115 @@ def _page(title: str, body: str) -> str:
     st = {{...DEF}}; localStorage.removeItem('ev_disp'); apply(st);
   }});
 }})();
+// drag-to-resize columns: grips on the #cmp-items header edges
+(function() {{
+  const tbl = document.getElementById('cmp-items');
+  if (!tbl) return;
+  const ths = Array.from(tbl.querySelectorAll('tr:first-child th'));
+  // The LAST column flexes: it has no grip and no explicit width, so it
+  // absorbs slack — the table's right edge always sticks to the page edge
+  // (min-width:100%), and growing past the viewport gives horizontal scroll.
+  const fixed = ths.slice(0, -1);
+  ths[ths.length - 1].style.width = '';
+  let saved = [];
+  try {{ saved = JSON.parse(localStorage.getItem('ev_colw') || '[]'); }} catch (e) {{}}
+  fixed.forEach((th, i) => {{
+    if (saved[i]) th.style.width = saved[i] + 'px';
+    const grip = document.createElement('span');
+    grip.className = 'col-grip';
+    grip.title = 'drag to resize column';
+    th.appendChild(grip);
+    grip.addEventListener('mousedown', (e) => {{
+      e.preventDefault();
+      grip.classList.add('active');
+      // Freeze the non-flex columns at their rendered widths so only the
+      // dragged column moves; the flex last column absorbs the delta.
+      fixed.forEach(t => t.style.width = t.offsetWidth + 'px');
+      const startX = e.clientX, startW = th.offsetWidth;
+      const move = (ev) => {{
+        th.style.width = Math.max(80, startW + ev.clientX - startX) + 'px';
+      }};
+      const up = () => {{
+        grip.classList.remove('active');
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        localStorage.setItem('ev_colw',
+          JSON.stringify(fixed.map(t => t.offsetWidth)));
+      }};
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    }});
+  }});
+}})();
+// column visibility checkboxes (persisted)
+(function() {{
+  const tbl = document.getElementById('cmp-items');
+  if (!tbl) return;
+  let hidden = [];
+  try {{ hidden = JSON.parse(localStorage.getItem('ev_cols_hidden') || '[]'); }} catch (e) {{}}
+  document.querySelectorAll('.colcb input').forEach((cb) => {{
+    const col = cb.dataset.col;
+    const apply = () => tbl.classList.toggle('hide-' + col, !cb.checked);
+    if (hidden.includes(col)) cb.checked = false;
+    apply();
+    cb.addEventListener('change', () => {{
+      apply();
+      const off = Array.from(document.querySelectorAll('.colcb input'))
+        .filter(x => !x.checked).map(x => x.dataset.col);
+      localStorage.setItem('ev_cols_hidden', JSON.stringify(off));
+    }});
+  }});
+}})();
+// drag any row's LOWER EDGE to set row height COLLECTIVELY (--row-h)
+(function() {{
+  const tbl = document.getElementById('cmp-items');
+  if (!tbl) return;
+  const rs = document.documentElement.style;
+  const saved = localStorage.getItem('ev_rowh');
+  if (saved) rs.setProperty('--row-h', saved);
+  const EDGE = 6;
+  let dragging = false;
+  tbl.addEventListener('mousemove', (e) => {{
+    if (dragging) return;
+    const td = e.target.closest('td');
+    if (!td) return;
+    const near = td.getBoundingClientRect().bottom - e.clientY < EDGE;
+    td.style.cursor = near ? 'row-resize' : '';
+  }});
+  tbl.addEventListener('mousedown', (e) => {{
+    const td = e.target.closest('td');
+    if (!td || td.getBoundingClientRect().bottom - e.clientY >= EDGE) return;
+    const box = (td.closest('tr').querySelector('td:not([rowspan]) > .txbox')
+                 || tbl.querySelector('td:not([rowspan]) > .txbox'));
+    if (!box) return;
+    e.preventDefault();
+    dragging = true;
+    const startY = e.clientY, startH = box.offsetHeight;
+    const move = (ev) => rs.setProperty('--row-h',
+      Math.max(24, startH + ev.clientY - startY) + 'px');
+    const up = () => {{
+      dragging = false;
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      localStorage.setItem('ev_rowh',
+        getComputedStyle(document.documentElement).getPropertyValue('--row-h').trim());
+    }};
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }});
+}})();
+// sina-dot click: jump to the rollout row and flash it transiently
+document.addEventListener('click', (ev) => {{
+  const c = ev.target.closest('circle.sina-pt');
+  if (!c) return;
+  const row = document.getElementById(c.dataset.target);
+  if (!row) return;
+  row.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+  row.classList.remove('flash');
+  void row.offsetWidth;  // restart the animation on repeat clicks
+  row.classList.add('flash');
+  setTimeout(() => row.classList.remove('flash'), 1700);
+}});
 </script>
 </body></html>"""
 
@@ -734,7 +872,9 @@ _AVBENCH_IDX: dict[tuple[str, str], list[dict]] | None = None
 _AVBENCH_FIELDS = ("transcript", "context", "context_char_span",
                    "verbalizer_prompt", "verbalizer_prompt_narrow",
                    "verbalizer_prompt_broad", "correct_response",
-                   "incorrect_plausible_response", "model_organism")
+                   "correct_response_narrow", "correct_response_broad",
+                   "incorrect_plausible_response", "model_organism",
+                   "row_metadata")
 
 
 def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
@@ -752,7 +892,8 @@ def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
                     "span_start, span_end, verbalizer_prompt, correct_response, "
                     "incorrect_plausible_response, token_exact, model_organism, "
                     "n_latents, verbalizer_prompt_narrow, "
-                    "verbalizer_prompt_broad "
+                    "verbalizer_prompt_broad, correct_response_narrow, "
+                    "correct_response_broad, row_metadata "
                     "FROM avbench_items ORDER BY suite, task, example_idx")
             finally:
                 db.close()
@@ -766,10 +907,13 @@ def _avbench_idx() -> dict[tuple[str, str], list[dict]]:
                     "verbalizer_prompt_narrow": r["verbalizer_prompt_narrow"],
                     "verbalizer_prompt_broad": r["verbalizer_prompt_broad"],
                     "correct_response": r["correct_response"],
+                    "correct_response_narrow": r["correct_response_narrow"],
+                    "correct_response_broad": r["correct_response_broad"],
                     "incorrect_plausible_response": r["incorrect_plausible_response"],
                     "model_organism": r["model_organism"],
                     "token_exact": r["token_exact"],
                     "n_latents": r["n_latents"],
+                    "row_metadata": r["row_metadata"],
                 })
         except Exception as e:
             print(f"[avbench] items table unavailable ({e}); falling back to HF")
@@ -873,6 +1017,23 @@ def _norm01(score, kind) -> float | None:
     return s if (kind or "").endswith("_01") else (s - 1.0) / 4.0
 
 
+def _misc_html(av_row: dict | None) -> str:
+    """row_metadata pills (design-time per-item quantities, e.g. the
+    rh-sampler's resampling disposition P(hack|prefix))."""
+    raw = (av_row or {}).get("row_metadata")
+    if not raw:
+        return ""
+    try:
+        meta = json.loads(raw)
+    except json.JSONDecodeError:
+        return f'<span class="muted">{_e(str(raw)[:120])}</span>'
+    bits = []
+    for k, val in meta.items():
+        shown = f"{val:.3f}" if isinstance(val, float) else str(val)
+        bits.append(f'<span class="pill" title="{_e(k)}">{_e(k)}: {_e(shown)}</span>')
+    return " ".join(bits)
+
+
 def _score_chip(score, kind: str | None = None) -> str:
     """Color-coded judge-score chip prefacing a verbalization. Scale-aware:
     0-1 kinds (trueness_01) bucket at <=0.4 red / <0.8 yellow / >=0.8 green;
@@ -888,34 +1049,58 @@ def _score_chip(score, kind: str | None = None) -> str:
 
 
 def _violin_svg(values, lo: float = 0.0, hi: float = 1.0,
-                w: int = 96, h: int = 22) -> str:
-    """Tiny inline SVG violin (gaussian KDE, mean tick). Used wherever a cell
-    summarizes a score DISTRIBUTION — per AGENTS.md violins beat bars/means."""
+                w: int = 96, h: int = 22, targets: list | None = None) -> str:
+    """Tiny inline SVG SINA plot: per-example dots jittered within the KDE
+    envelope (0.05 kernel per CLAUDE.md), a faint density outline, a
+    FULL-SCALE box framing the whole lo..hi (0-1) score range — identical in
+    every cell so positions are comparable at a glance — with quartile ticks,
+    full-height median, and amber mean inside. `targets` (parallel to values)
+    makes each dot clickable — the page-level handler scrolls to that element
+    id and flashes the row."""
     import numpy as np
-    v = np.asarray([x for x in values if x is not None], dtype=float)
-    if v.size == 0:
+    pairs = [(x, (targets[i] if targets else None))
+             for i, x in enumerate(values) if x is not None]
+    if not pairs:
         return ""
+    v = np.asarray([p[0] for p in pairs], dtype=float)
     rng = hi - lo if hi > lo else 1.0
     x = np.linspace(lo, hi, 60)
     bw = 0.05 * rng  # short fixed kernel (CLAUDE.md), not Scott/Silverman
-    d = np.exp(-0.5 * ((x[:, None] - v[None, :]) / bw) ** 2).sum(axis=1)
-    if d.max() > 0:
-        d = d / d.max()
-    mid, amp = h / 2.0, (h - 2) / 2.0
-    xs = (x - lo) / rng * (w - 2) + 1
-    pts = ([f"{xs[i]:.1f},{mid - d[i] * amp:.1f}" for i in range(len(x))]
-           + [f"{xs[i]:.1f},{mid + d[i] * amp:.1f}" for i in reversed(range(len(x)))])
+    dens = np.exp(-0.5 * ((x[:, None] - v[None, :]) / bw) ** 2).sum(axis=1)
+    if dens.max() > 0:
+        dens = dens / dens.max()
+    mid, amp = h / 2.0, (h - 4) / 2.0
     px = lambda val: (float(val) - lo) / rng * (w - 2) + 1
+    xs = (x - lo) / rng * (w - 2) + 1
+    outline = ([f"{xs[i]:.1f},{mid - dens[i] * amp:.1f}" for i in range(len(x))]
+               + [f"{xs[i]:.1f},{mid + dens[i] * amp:.1f}" for i in reversed(range(len(x)))])
+    # sina dots: jitter bounded by the local density
+    jit = np.random.default_rng(0).uniform(-1.0, 1.0, size=v.size)
+    d_at = np.interp(v, x, dens)
+    dots = []
+    for i, (val, tgt) in enumerate(pairs):
+        cy = mid + jit[i] * d_at[i] * amp
+        t = f' data-target="{_e(tgt)}"' if tgt else ""
+        cls = ' class="sina-pt"' if tgt else ' class="sina-d"'
+        dots.append(f'<circle{cls} cx="{px(val):.1f}" cy="{cy:.1f}" r="2"{t}>'
+                    f'<title>{val:.2f}</title></circle>')
     q1, med, q3 = (px(q) for q in np.percentile(v, [25, 50, 75]))
     mean_x = px(v.mean())
-    bh = max(3.0, (h - 2) * 0.28)  # thin quartile box around the midline
+    qh = (h - 2) * 0.30  # quartile ticks: short verticals inside the scale box
     return (f'<svg class="vio" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
-            f'<polygon points="{" ".join(pts)}" fill="#60a5fa" opacity="0.55"/>'
-            f'<rect x="{q1:.1f}" y="{mid - bh / 2:.1f}" width="{max(q3 - q1, 0.8):.1f}" '
-            f'height="{bh:.1f}" fill="none" stroke="#64748b" stroke-width="1"/>'
-            f'<line x1="{med:.1f}" y1="{mid - bh / 2:.1f}" x2="{med:.1f}" '
-            f'y2="{mid + bh / 2:.1f}" stroke="#64748b" stroke-width="1.5"/>'
-            f'<line x1="{mean_x:.1f}" y1="2" x2="{mean_x:.1f}" y2="{h - 2}" '
+            f'<polygon points="{" ".join(outline)}" fill="#60a5fa" opacity="0.18"/>'
+            # FULL-SCALE box: always frames lo..hi (the whole 0-1 score axis),
+            # not the data extent — every cell gets the identical frame
+            f'<rect x="{px(lo):.1f}" y="1" width="{px(hi) - px(lo):.1f}" '
+            f'height="{h - 2}" fill="none" stroke="#64748b" stroke-width="1"/>'
+            f'<line x1="{q1:.1f}" y1="{mid - qh / 2:.1f}" x2="{q1:.1f}" '
+            f'y2="{mid + qh / 2:.1f}" stroke="#64748b" stroke-width="1" opacity="0.8"/>'
+            f'<line x1="{q3:.1f}" y1="{mid - qh / 2:.1f}" x2="{q3:.1f}" '
+            f'y2="{mid + qh / 2:.1f}" stroke="#64748b" stroke-width="1" opacity="0.8"/>'
+            f'<line x1="{med:.1f}" y1="1" x2="{med:.1f}" y2="{h - 1}" '
+            f'stroke="#64748b" stroke-width="1.5"/>'
+            f'{"".join(dots)}'
+            f'<line x1="{mean_x:.1f}" y1="1" x2="{mean_x:.1f}" y2="{h - 1}" '
             f'stroke="#f59e0b" stroke-width="1.5"/></svg>')
 
 
@@ -926,6 +1111,54 @@ def _long_text(text: str, head: int = 300) -> str:
         return _e(text)
     return (f'{_e(text[:head])}&hellip; <details><summary>full text</summary>'
             f'<div class="pre">{_e(text)}</div></details>')
+
+
+def _overview_html(db, run_ids, names, sel_eval, sel_variant, show_all) -> str:
+    """Compact across-tasks lead-in for the compare page: one row per eval,
+    one column per selected method, cell = mean judge score for the active
+    prompt tier (scale-aware chip; hover shows n). Eval names link to that
+    task's item table below; the selected eval row is highlighted."""
+    # Pooled across prompt tiers (specific + narrow + broad) — the overview
+    # is a coarse landscape; the per-item table below stays tier-filtered.
+    ph = ",".join(["%s"] * len(run_ids))
+    rows = db.query(
+        f"SELECT run_id, eval_name, score, score_kind FROM open_ended_examples "
+        f"WHERE run_id IN ({ph}) AND score IS NOT NULL", tuple(run_ids))
+    if not rows:
+        return ""
+    cells: dict[tuple, list[float]] = {}
+    kinds: dict[tuple, str] = {}
+    for r in rows:
+        k = (r["run_id"], r["eval_name"])
+        cells.setdefault(k, []).append(float(r["score"]))
+        kinds[k] = r["score_kind"]
+    evals = sorted({r["eval_name"] for r in rows})
+    qs_all = "&all=1" if show_all else ""
+    runs_qs = ",".join(map(str, run_ids))
+    head = "".join(f"<th>{_e(names[rid])}</th>" for rid in run_ids)
+    trs = []
+    for en in evals:
+        link = (f'<a href="/av/compare?runs={runs_qs}&eval={_e(en)}'
+                f'&variant={_e(sel_variant)}{qs_all}">{_e(en)}</a>')
+        tds = []
+        for rid in run_ids:
+            vals = cells.get((rid, en))
+            if not vals:
+                tds.append('<td class="num">&mdash;</td>')
+                continue
+            lo, hi = ((0.0, 1.0) if (kinds[(rid, en)] or "").endswith("_01")
+                      else (1.0, 5.0))
+            mean = sum(vals) / len(vals)
+            tds.append(
+                f'<td class="num" title="n={len(vals)}, mean={mean:.2f}">'
+                f'{_violin_svg(vals, lo, hi, w=96, h=20)}'
+                f'<span class="muted" style="font-size:10px"> {mean:.2f}</span></td>')
+        hl = ' style="background:#eef2ff"' if en == sel_eval else ""
+        name_cell = f"<b>{link}</b>" if en == sel_eval else link
+        trs.append(f"<tr{hl}><td>{name_cell}</td>{''.join(tds)}</tr>")
+    return (f'<h2>across tasks &middot; score sinas (all prompt tiers pooled)</h2>'
+            f'<div style="overflow-x:auto"><table style="width:auto">'
+            f'<tr><th>eval</th>{head}</tr>{"".join(trs)}</table></div>')
 
 
 @av.route("/compare")
@@ -958,6 +1191,7 @@ def compare():
         eval_names: list[str] = []
         avail_variants: list[str] = []
         sections = ""
+        overview = ""
         if len(selected) >= 2:
             ph = ",".join(["%s"] * len(run_ids))
             eval_names = [r["eval_name"] for r in db.query(
@@ -995,6 +1229,10 @@ def compare():
                                    f"eval on the selected runs."))
             else:
                 sections = _empty("The selected runs have no open-ended rows.")
+            if eval_names:
+                nm = {r["run_id"]: _short_ckpt(r["checkpoint"]) for r in selected}
+                overview = _overview_html(db, run_ids, nm, sel_eval, sel_variant,
+                                          request.args.get("all", "0") == "1")
     finally:
         db.close()
 
@@ -1043,7 +1281,7 @@ def compare():
         body = picker + _empty("Tick two or more runs (methods) to compare "
                                "their verbalizations item by item.")
     else:
-        body = picker + sections
+        body = picker + overview + sections
     return _page("Compare runs", f"<h2>Compare runs</h2>{body}")
 
 
@@ -1078,11 +1316,17 @@ def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -
 
     # Per-method score distribution over ALL items of this eval (normalized
     # to [0, 1] so 0-1 trueness runs and legacy 1-5 runs share an axis).
+    # Each sina dot targets its rollout row (click -> scroll + flash).
+    def _row_id(r):
+        return f"ro-{r['run_id']}-i{r['example_idx']}-{r['mode']}"
+
     by_method: dict[int, list[float]] = {rid: [] for rid in run_ids}
+    by_method_tgt: dict[int, list[str]] = {rid: [] for rid in run_ids}
     for r in rows:
         n = _norm01(r["score"], r["score_kind"])
         if n is not None:
             by_method[r["run_id"]].append(n)
+            by_method_tgt[r["run_id"]].append(_row_id(r))
     strip = []
     for rid in method_order:
         vals = by_method.get(rid) or []
@@ -1090,10 +1334,12 @@ def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -
             continue
         strip.append(f'<span class="vio-cell">'
                      f'{_runtag(rid, idx_of[rid], base_id, names[rid])} '
-                     f'{_violin_svg(vals)} <span class="muted">'
+                     f'{_violin_svg(vals, w=140, h=26, targets=by_method_tgt[rid])} '
+                     f'<span class="muted">'
                      f'{sum(vals) / len(vals):.2f} &middot; n={len(vals)}</span></span>')
     summary = ('<div class="vio-strip"><span class="muted">score distribution '
-               'per method (normalized 0-1, amber tick = mean):</span> '
+               'per method (normalized 0-1, amber tick = mean; click a dot to '
+               'jump to its rollout):</span> '
                + " ".join(strip) + "</div>") if strip else ""
 
     def _variant_vp(av) -> str | None:
@@ -1102,6 +1348,15 @@ def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -
         if variant != "specific":
             return av.get(f"verbalizer_prompt_{variant}") or av.get("verbalizer_prompt")
         return av.get("verbalizer_prompt")
+
+    def _variant_cr(av) -> str | None:
+        """Tier-appropriate ground truth: per-tier reference where the task
+        defines one (codi computational tiers), the specific answer elsewhere."""
+        if av is None:
+            return None
+        if variant != "specific":
+            return av.get(f"correct_response_{variant}") or av.get("correct_response")
+        return av.get("correct_response")
 
     # Cluster cards render by default: precompute every (method, item) block
     # concurrently (self-hosted judge — concurrency is fine; in-process cache
@@ -1112,7 +1367,7 @@ def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -
     for idx, by_run in ordered:
         av = _av_row(eval_name, idx)
         vp_j = _variant_vp(av) or _item_fields(by_run[next(iter(by_run))])[1]
-        cr_j = (av or {}).get("correct_response") or _item_fields(
+        cr_j = _variant_cr(av) or _item_fields(
             by_run[next(iter(by_run))])[2]
         for rid in by_run:
             jobs.append(((rid, eval_name, idx, variant), vp_j, cr_j, by_run[rid]))
@@ -1135,7 +1390,7 @@ def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -
             tx_cell = _transcript_html(av)
             ctx_cell = _context_html(av)
             vp = _variant_vp(av) or vp
-            correct = av["correct_response"] or correct
+            correct = _variant_cr(av) or correct
         else:
             tx_cell = _long_text(ctx, 400)
             ctx_cell = _long_text(ctx, 200)
@@ -1147,12 +1402,16 @@ def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -
         first_item_row = True
         for rid in methods:
             rollouts = sorted(by_run[rid], key=lambda x: x["mode"])
-            mvals = [v for v in (_norm01(x["score"], x["score_kind"]) for x in rollouts)
-                     if v is not None]
-            mv_svg = (f'<div>{_violin_svg(mvals, w=72, h=16)}</div>'
+            mvals, mtgts = [], []
+            for x in rollouts:
+                n = _norm01(x["score"], x["score_kind"])
+                if n is not None:
+                    mvals.append(n)
+                    mtgts.append(_row_id(x))
+            mv_svg = (f'<div>{_violin_svg(mvals, w=72, h=16, targets=mtgts)}</div>'
                       if len(mvals) >= 3 else "")
             method_cell = (
-                f'<td rowspan="{len(rollouts)}">'
+                f'<td class="col-method" rowspan="{len(rollouts)}">'
                 f'{_runtag(rid, idx_of[rid], base_id, names[rid])}'
                 f'{mv_svg}'
                 f'{_cluster_card(cards.get((rid, eval_name, idx, variant)))}</td>')
@@ -1160,10 +1419,11 @@ def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -
             for ro in rollouts:
                 tds = []
                 cls = ' class="item-top"' if first_item_row else ""
+                cls = f' id="{_row_id(ro)}"{cls}'
                 if first_item_row:
-                    tds.append(f'<td class="pre" rowspan="{total}">{tx_cell}</td>')
-                    tds.append(f'<td class="pre" rowspan="{total}">{ctx_cell}</td>')
-                    tds.append(f'<td class="pre" rowspan="{total}">{_e(vp)}{vp_note}</td>')
+                    tds.append(f'<td class="pre col-tx" rowspan="{total}">{tx_cell}</td>')
+                    tds.append(f'<td class="pre col-ctx" rowspan="{total}">{ctx_cell}</td>')
+                    tds.append(f'<td class="pre col-vp" rowspan="{total}">{_e(vp)}{vp_note}</td>')
                 if first_method_row:
                     tds.append(method_cell)
                 mode_tag = (f' <span class="muted">{_e(ro["mode"])}</span>'
@@ -1175,32 +1435,49 @@ def _render_items(selected, run_ids, base_id, rows, variant: str = "specific") -
                             f'P {float(prec):.1f}</span>' if prec is not None else "")
                 just = (f'<div class="judge-just">{_e(ro["judge_justification"])}</div>'
                         if ro["judge_justification"] else "")
-                tds.append(f'<td class="pre"><div class="txbox">'
+                tds.append(f'<td class="pre col-verb"><div class="txbox">'
                            f'{_score_chip(ro["score"], ro["score_kind"])}'
                            f'{prec_tag}{mode_tag} '
                            f'{_long_text(ro["verbalization"])}{just}</div></td>')
                 if first_item_row:
-                    tds.append(f'<td class="pre" rowspan="{total}">{_e(correct)}</td>')
+                    tds.append(f'<td class="pre col-corr" rowspan="{total}">{_e(correct)}</td>')
+                    tds.append(f'<td class="pre col-misc" rowspan="{total}">'
+                               f'{_misc_html(av)}</td>')
                 trs.append(f'<tr{cls}>{"".join(tds)}</tr>')
                 first_item_row = False
                 first_method_row = False
 
-    head = ('<tr><th title="full text fed cold to the '
+    # table-layout: FIXED with var-driven th widths — max-width on td is
+    # ignored by auto table layout, which is why the column slider was a
+    # no-op. With fixed layout the first-row (th) widths define the columns,
+    # so the --pre-maxw variable resizes them live.
+    head = ('<tr><th class="w-var col-tx" title="full text fed cold to the '
             'subject model; the highlighted span is the context whose '
             'activations are read">transcript <span class="muted">(context '
             'highlighted)</span></th>'
-            '<th title="the read window; highlighted = '
+            '<th class="w-var col-ctx" title="the read window; highlighted = '
             'context_tokens, the tokens whose activations are injected">'
             'context <span class="muted">(context_tokens highlighted)</span></th>'
-            '<th>verbalizer_prompt</th>'
-            '<th>method</th>'
-            '<th>verbalization(s) <span class="muted">(judge score &middot; '
+            '<th class="w-var col-vp">verbalizer_prompt</th>'
+            '<th class="w-method col-method">method</th>'
+            '<th class="w-var col-verb">verbalization(s) <span class="muted">(judge score &middot; '
             'judge reasoning in italics)</span></th>'
-            '<th>correct_response</th></tr>')
+            '<th class="w-var col-corr">correct_response</th>'
+            '<th class="col-misc" title="row_metadata from AVBench — '
+            'design-time per-item quantities (e.g. rhsampler '
+            'P(hack|prefix) from the resampling pass)">misc</th></tr>')
+    col_cbs = " ".join(
+        f'<label class="colcb"><input type="checkbox" data-col="{c}" checked> {label}</label>'
+        for c, label in [("col-tx", "transcript"), ("col-ctx", "context"),
+                         ("col-vp", "prompt"), ("col-method", "method"),
+                         ("col-verb", "verbalizations"), ("col-corr", "correct"),
+                         ("col-misc", "misc")])
     note = (f'<p class="muted">{len(ordered)} items &middot; '
             f'{len(run_ids)} methods &middot; ordered by score spread '
-            f'(most method disagreement first)</p>')
-    return summary + note + f"<table>{head}{''.join(trs)}</table>"
+            f'(most method disagreement first) &nbsp;&middot;&nbsp; '
+            f'columns: {col_cbs}</p>')
+    return (summary + note
+            + f'<table id="cmp-items">{head}{"".join(trs)}</table>')
 
 
 @av.route("/api/item_cluster_score")
